@@ -1,0 +1,42 @@
+{
+  "format": 1,
+  "repository": "ha-homelab/home-assistant",
+  "revision": "e4adce7e2fe72ca966a98e0ddc1e12b0d3ac7e50",
+  "files": [
+    {
+      "destination": "homeassistant/packages/core_updates.yaml",
+      "source": "config/packages/core_updates.yaml",
+      "transformation": "core-package-v1",
+      "source_sha256": "34a5dc628d8b3704fb977082d095da29c10d8e8f662ef2cfe95ac6a06a58ac2c",
+      "output_sha256": "c6523e854a387cd094186055295716bd5e384db4799149b934a55246a2ff9990"
+    },
+    {
+      "destination": "homeassistant/packages/hacs_maintenance.yaml",
+      "source": "config/packages/hacs_maintenance.yaml",
+      "transformation": "identity-v1",
+      "source_sha256": "7110dceb718c50d8f2dc4ab2bd72ed2acf9c2979c8d1c90c40673215589fddc7",
+      "output_sha256": "7110dceb718c50d8f2dc4ab2bd72ed2acf9c2979c8d1c90c40673215589fddc7"
+    },
+    {
+      "destination": "homeassistant/blueprints/motion_light_off.yaml",
+      "source": "config/blueprints/automation/ha_homelab/motion_light_off.yaml",
+      "transformation": "identity-v1",
+      "source_sha256": "d674971e397ed501674eb348fb2bed5887778baeae9b0c76c3c36344dde11b26",
+      "output_sha256": "d674971e397ed501674eb348fb2bed5887778baeae9b0c76c3c36344dde11b26"
+    },
+    {
+      "destination": "runtime_tests/test_core_updates.py",
+      "source": "tests/test_core_updates.py",
+      "transformation": "core-tests-v1",
+      "source_sha256": "b3815416f8fd2e4364a1f72a602e76b60cc78fe02428ce42c9383fa278b67ed9",
+      "output_sha256": "8bcc6cdea711013cc4a4fb75ac0e76e10464396612b402a140b66220b501b1cb"
+    },
+    {
+      "destination": "runtime_tests/test_hacs_maintenance.py",
+      "source": "tests/test_hacs_maintenance.py",
+      "transformation": "hacs-tests-v1",
+      "source_sha256": "e8e4fb4d15a7c361ad3c1b94fce7123ad85537a54d8c3bfb4b47e2de9676947b",
+      "output_sha256": "18de70bcef5d304148ad8f24d478f8994e9b1d85dee67fba427cb919b6013924"
+    }
+  ]
+}

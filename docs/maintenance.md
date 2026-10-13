@@ -21,7 +21,10 @@ number. Do not copy another installation's mobile entity or account identifier.
 
 `hacs_maintenance.yaml` performs sequential updates only after verifying a recent
 backup, and defers restart until scripts and automations are idle. Its Sunday
-06:00 schedule is an example in HA's configured timezone. Change it locally.
+06:00 schedule is an example in HA's configured timezone. Put an installation's
+schedule change in its private deployment overlay. Do not edit the generated
+package in this source tree; shared logic changes follow the
+[pinned upstream import workflow](publication.md#shared-source-ownership).
 It pauses around active Core updates. It does not upgrade Core or device firmware.
 
 Import `homeassistant/blueprints/motion_light_off.yaml` through HA's blueprint
