@@ -24,7 +24,7 @@
   "versioning": {
     "schema": 1,
     "promotion": "promote-bytes",
-    "toolkit_revision": "74e4b82d651ff5488e65ab0fdce8558b4c705665",
+    "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
     "files": [
       {
         "path": "SOURCE_VERSION",
@@ -42,6 +42,6 @@
     ]
   },
   "fuzzing": {
-    "toolkit_ref": "74e4b82d651ff5488e65ab0fdce8558b4c705665"
+    "toolkit_ref": "5e413f80a4353d328b4529eae57992ac3987e2dd"
   }
 }

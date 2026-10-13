@@ -140,7 +140,7 @@ Local checks run all commands in `local_checks`; missing toolchains, container
 runtimes or credentials are failures, not successful skips. They help reproduce
 CI but do not create promotion evidence or certify untested physical targets.
 
-
+See [platform packaging and toolchain setup](docs/release-packaging.md) for additional local prerequisites.
 
 ## Maintaining this policy
 

@@ -167,8 +167,8 @@ jobs:
     needs:
       - prepare
       - gate
-    if: ${{ needs.prepare.outputs.build == 'true' && needs.prepare.outputs.channel != 'stable' && vars.RELEASE_CHANNELS_ENABLED
-      == 'true' }}
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.prepare.outputs.build == 'true' && needs.prepare.outputs.channel
+      != 'stable' && vars.RELEASE_CHANNELS_ENABLED == 'true' }}
     runs-on: ${{ fromJSON((vars.CI_RUNNER_MODE == 'self-hosted' || vars.CI_RUNNER_MODE == 'k3s') && (contains(fromJSON('["push","schedule","workflow_dispatch"]'),
       github.event_name) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && (vars.CI_RUNNER_RELEASE_LABELS
       || '[]') || '["ubuntu-latest"]') }}
@@ -239,7 +239,8 @@ jobs:
     needs:
       - prepare
       - gate
-    if: ${{ needs.prepare.outputs.channel == 'stable' && needs.prepare.outputs.build == 'true' }}
+    if: ${{ !cancelled() && needs.gate.result == 'success' && needs.prepare.outputs.channel == 'stable' && needs.prepare.outputs.build
+      == 'true' }}
     runs-on: ${{ fromJSON((vars.CI_RUNNER_MODE == 'self-hosted' || vars.CI_RUNNER_MODE == 'k3s') && (contains(fromJSON('["push","schedule","workflow_dispatch"]'),
       github.event_name) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && (vars.CI_RUNNER_RELEASE_LABELS
       || '[]') || '["ubuntu-latest"]') }}
@@ -289,9 +290,9 @@ jobs:
     if: ${{ needs.prepare.outputs.build == 'true' && github.event.repository.private == false && github.event_name
       == 'workflow_dispatch' && github.event.inputs.channel == 'rc' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       }}
-    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/fuzz.yml@74e4b82d651ff5488e65ab0fdce8558b4c705665 # main
+    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/fuzz.yml@5e413f80a4353d328b4529eae57992ac3987e2dd # main
     with:
-      toolkit-ref: 74e4b82d651ff5488e65ab0fdce8558b4c705665
+      toolkit-ref: 5e413f80a4353d328b4529eae57992ac3987e2dd
       release-plan-artifact: ${{ needs.prepare.outputs.plan_artifact }}
     permissions:
       contents: read
