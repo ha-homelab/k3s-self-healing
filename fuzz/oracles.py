@@ -23,9 +23,9 @@ def recorder_metadata(data: bytes) -> None:
     try:
         validate_metadata(metadata)
     except ValueError:
-        assert metadata == original  # nosec B101 - mutation oracle
+        assert metadata is original or metadata == original  # nosec B101 - mutation oracle
         return
-    assert metadata == original  # nosec B101 - mutation oracle
+    assert metadata is original or metadata == original  # nosec B101 - mutation oracle
     assert known_dump(metadata["file"])  # nosec B101 - filename boundary
     assert Path(metadata["file"]).name == metadata["file"]  # nosec B101
     assert type(metadata["format"]) is int  # nosec B101 - bool must fail

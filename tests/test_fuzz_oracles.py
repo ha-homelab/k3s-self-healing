@@ -52,6 +52,18 @@ class FuzzOracleTests(unittest.TestCase):
                     )
 
     def test_non_documents_and_truncated_data(self):
-        for data in (b"", b"{", b"[]", b"null", b"false", b"1", b"\xff", b"[" * 2048):
+        for data in (
+            b"",
+            b"{",
+            b"[]",
+            b"null",
+            b"false",
+            b"NaN",
+            b"Infinity",
+            b"-Infinity",
+            b"1",
+            b"\xff",
+            b"[" * 2048,
+        ):
             recorder_metadata(data)
             runtime_contract(data)
