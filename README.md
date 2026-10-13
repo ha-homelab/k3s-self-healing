@@ -90,3 +90,9 @@ Packaging requires a clean commit and an exact match between tracked files and
 workstation timestamps, private source revision mapping, or runtime data.
 
 Original project code is MIT licensed. See `NOTICE` for upstream dependencies.
+
+## Candidate validation preparation
+
+[Bounded backup contract targets](docs/fuzzing.md) replay synthetic metadata and
+reviewed-profile mutations through the pure validators. The planned source
+release integration is documented in [the lifecycle design](docs/release-lifecycle-design.md).

@@ -8,3 +8,7 @@ build/
 site.json
 .env
 *.log
+
+# Local bounded fuzz runner
+.fuzz-venv/
+fuzz-results/
