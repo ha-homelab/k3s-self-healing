@@ -17,6 +17,10 @@ class PrivacyTests(unittest.TestCase):
     def test_device_model_and_github_authorship_are_allowed(self):
         self.assertEqual(findings('fixture', 'iPhone Air; @4alvit; git@github.com:ha-homelab/k3s-self-healing.git'), [])
 
+    def test_reserved_email_domain_does_not_allow_other_domains(self):
+        self.assertFalse(findings('fixture', 'email@example.test'))
+        self.assertTrue(findings('fixture', 'email@' + 'operator.test'))
+
     def test_documentation_address_allowed_private_endpoint_rejected(self):
         self.assertFalse(findings('fixture', 'http://192.0.2.10:8123'))
         self.assertTrue(findings('fixture', 'http://' + '.'.join(['192', '168', '77', '42'])))

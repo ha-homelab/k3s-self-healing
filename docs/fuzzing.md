@@ -22,12 +22,11 @@ hash-locked requirements. Atheris 3.1.0's pinned wheel is Linux/x86-64 only. Use
 the shared Linux runner for mutation testing; do not substitute an unpinned
 local engine when a wheel is unavailable.
 
-The target configuration is prepared for release-candidate lifecycle integration.
-The current validation workflow runs deterministic corpus replay through
-`tests/test_fuzz_oracles.py`; it does not start a mutation campaign. A corpus
-replay is not a Linux fuzz qualification result. The future RC workflow must bind
-its actual result to the candidate source, frozen version plan and artifact
-receipt before publishing the candidate.
+The shared RC workflow runs both Linux mutation campaigns and binds their
+immutable result to the exact candidate source and frozen version plan. Missing
+or failed results prevent RC publication. Ordinary source validation also runs
+deterministic corpus replay through `tests/test_fuzz_oracles.py`; this replay is
+not a mutation campaign and cannot qualify an RC by itself.
 
 For portable local replay:
 

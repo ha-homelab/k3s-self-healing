@@ -1,0 +1,61 @@
+name: Build release assets
+'on':
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      channel:
+        required: true
+        type: string
+      release_plan_artifact:
+        description: Frozen version plan allocated by the release workflow
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: ${{ fromJSON((vars.CI_RUNNER_MODE == 'self-hosted' || vars.CI_RUNNER_MODE == 'k3s') && (contains(fromJSON('["push","schedule","workflow_dispatch"]'),
+      github.event_name) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && (vars.CI_RUNNER_RELEASE_LABELS
+      || '[]') || '["ubuntu-latest"]') }}
+    timeout-minutes: 45
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed
+      with:
+        egress-policy: audit
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.14'
+    - name: Download frozen release version plan
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      with:
+        name: ${{ inputs.release_plan_artifact }}
+        path: .
+    - name: Apply frozen release version inputs
+      run: python3 scripts/version_plan.py sync --root . --plan .release-plan.json
+    - name: Build and verify the exact integration-source archive
+      env:
+        VERSION: ${{ inputs.version }}
+        CHANNEL: ${{ inputs.channel }}
+      run: 'python3 -m pip install -r requirements-validation.txt
+
+        python3 scripts/package_candidate.py "$VERSION" "$CHANNEL"
+
+        python3 scripts/verify_source.py release-dist/*.tar.gz'
+    - name: Verify all artifact checksums
+      working-directory: release-dist
+      run: sha256sum --check ./*.sha256
+    - name: Verify and stage versioned release assets
+      run: python3 scripts/stage_release_assets.py --target package --pattern 'release-dist/*'
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: release-assets
+        path: release-assets/package/*
+        if-no-files-found: error
+        retention-days: 14
