@@ -29,6 +29,8 @@ The apply path suspends the schedule until the PVC identity, NFS destination and
 retention checks pass. A failed validation leaves it suspended. `--run-now`
 requires `--apply`. Music Assistant backups are separately optional and require
 the Music Assistant data and backup PVCs on the chosen LAN node.
+Its worker requires `NODE_NAME`; the manifest supplies the actual scheduled node
+through the Kubernetes downward API so recovery metadata never invents a node.
 
 Recovery data contains HA authentication/pairing state, Kubernetes Secrets and
 k3s server credentials. Restrict and protect the NAS, and keep recovery sets,

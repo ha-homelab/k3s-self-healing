@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import yaml
 from privacy_scan import scan
+from ha_sources import check as check_ha_sources
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,6 +19,7 @@ def main():
     failures = scan(ROOT, files)
     if failures:
         raise SystemExit(json.dumps(failures, indent=2))
+    check_ha_sources(ROOT)
     for name in files:
         path = ROOT / name
         if path.suffix == '.py':

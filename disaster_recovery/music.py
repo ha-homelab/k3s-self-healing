@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import fcntl
 import os
 from pathlib import Path
+import re
 
 from .restore import verify_snapshot
 from .runner import PROFILE, archive_component, cleanup_completed, timestamp, write_json
@@ -10,6 +11,10 @@ from .runner import PROFILE, archive_component, cleanup_completed, timestamp, wr
 
 def run(source=Path('/data'), root=Path('/backup/snapshots')):
     """Publish only a verified snapshot; keep the previous success on failure."""
+    node = os.environ.get('NODE_NAME', '')
+    if len(node) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
+                                  for label in node.split('.')):
+        raise ValueError('NODE_NAME must identify the source Kubernetes node')
     os.umask(0o077)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (root / '.run.lock').open('a') as lock:
@@ -20,7 +25,7 @@ def run(source=Path('/data'), root=Path('/backup/snapshots')):
         write_json(root / 'latest-attempt.json', {'state': 'running', 'snapshot': name})
         try:
             component = archive_component(source, work, 'music-assistant',
-                {'type': 'local', 'node': 'example-lan-node', 'namespace': 'homeassistant',
+                {'type': 'local', 'node': node, 'namespace': 'homeassistant',
                  'claim': 'music-assistant-home-data'},
                 ['.cache', 'musicassistant.log', 'musicassistant.log.1'])
             write_json(work / 'manifest.json', {
