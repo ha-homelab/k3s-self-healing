@@ -1,0 +1,13 @@
+Original project code: Copyright (c) 2026 HA Homelab contributors, MIT License.
+
+Home Assistant is an upstream project distributed under Apache-2.0.
+https://github.com/home-assistant/core
+The optional compatibility patchers identify and modify upstream Python code;
+upstream source remains under its original license. Upstream images are referenced,
+not redistributed in this source archive.
+
+The installation uses the community pajikos Home Assistant Helm chart.
+https://github.com/pajikos/home-assistant-helm-chart
+The chart, k3s, Helm, Mosquitto, ESPHome, Ring-MQTT, Music Assistant, MySQL and
+Python dependencies retain their respective upstream licenses. Their source code
+and container layers are not included in this distribution.

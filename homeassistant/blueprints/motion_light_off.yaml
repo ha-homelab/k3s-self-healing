@@ -1,0 +1,213 @@
+blueprint:
+  name: Motion light timeout with availability recovery
+  description: >-
+    Turn lights or lighting switches off after inactivity. Preserve ordinary
+    manual off-to-on use until a newer motion cycle. Retry genuine availability
+    recovery only for the recovered device and its current on state.
+    Supply ordinary state-to-off triggers with static
+    durations: the same definitions drive both timers and recovery checks.
+    Any active motion blocks shutdown. A newer motion-clear event supersedes
+    older timers, including when sensors use different timeouts. Unavailable
+    sensors cannot establish inactivity; another working sensor can still do so.
+    Current manual overrides and other guards are checked before every device.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  input:
+    motion_triggers:
+      name: Inactivity triggers
+      description: State triggers to off, with optional static for durations.
+      selector:
+        trigger: {}
+    target_entities:
+      name: Lights and lighting switches
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: light
+            - domain: switch
+    recovery_from_states:
+      name: Previous states allowed for quick recovery
+      description: >-
+        Only unknown and unavailable transitions qualify as recovery. Ordinary
+        off-to-on transitions never bypass the per-device manual-use guard.
+      default:
+        - unknown
+        - unavailable
+      selector:
+        object: {}
+    guards:
+      name: Additional conditions
+      default: []
+      selector:
+        condition: {}
+    entity_off_data:
+      name: Optional turn-off parameters by entity ID
+      description: A mapping such as light.dimmer to a mapping with transition in seconds.
+      default: {}
+      selector:
+        object: {}
+    after_actions:
+      name: Actions after attempting shutdown
+      default: []
+      selector:
+        action: {}
+
+mode: parallel
+max: 20
+max_exceeded: silent
+trace:
+  stored_traces: 5
+
+variables:
+  motion_triggers: !input motion_triggers
+  target_entities: !input target_entities
+  entity_off_data: !input entity_off_data
+  # Capture provenance for this run, never an automation-wide last_triggered.
+  recovery_entity: >-
+    {% if trigger is defined and trigger.id | default('') == 'available_on'
+      and trigger.from_state is defined and trigger.from_state is not none
+      and trigger.from_state.state in ['unknown', 'unavailable'] %}
+      {{ trigger.entity_id }}
+    {% else %}{{ '' }}{% endif %}
+  recovery_changed: >-
+    {{ as_timestamp(trigger.to_state.last_changed)
+       if recovery_entity != '' else 0 }}
+  # Keep sensor IDs and durations in one place: the configured state triggers.
+  timeout_rules: >-
+    {% set ns = namespace(rules=[]) %}
+    {% for t in motion_triggers %}
+      {% set d = t.get('for', {}) %}
+      {% if d is mapping %}
+        {% set seconds = d.get('days', 0) * 86400 + d.get('hours', 0) * 3600
+          + d.get('minutes', 0) * 60 + d.get('seconds', 0)
+          + d.get('milliseconds', 0) / 1000 %}
+      {% elif d is number %}
+        {% set seconds = d %}
+      {% else %}
+        {% set parts = d.split(':') | map('float') | list %}
+        {% set seconds = parts[0] * 3600 + parts[1] * 60 + parts[2] %}
+      {% endif %}
+      {% set entities = [t.entity_id] if t.entity_id is string else t.entity_id %}
+      {% for entity in entities %}
+        {% set ns.rules = ns.rules + [dict(entity_id=entity, seconds=seconds)] %}
+      {% endfor %}
+    {% endfor %}
+    {{ ns.rules }}
+
+triggers:
+  - triggers: !input motion_triggers
+  # The default excludes manual ON; provenance is checked again in actions.
+  - trigger: state
+    entity_id: !input target_entities
+    from: !input recovery_from_states
+    to: 'on'
+    for:
+      seconds: 3
+    id: available_on
+  # Reconcile missed timers after reload, late integration readiness and errors.
+  - trigger: time_pattern
+    minutes: '/1'
+    id: retry
+  - trigger: homeassistant
+    event: start
+    id: startup
+  - trigger: event
+    event_type: automation_reloaded
+    id: reload
+
+conditions:
+  - condition: template
+    value_template: >-
+      {{ target_entities | select('is_state', 'on') | list | count > 0 }}
+
+actions:
+  - choose:
+      - conditions: "{{ recovery_entity != '' }}"
+        sequence:
+          # A failing recovered device must not block other devices or timers.
+          # The loop belongs only to this exact ON generation and ends on OFF,
+          # another outage, or a later manual ON. Rebuilding this automation
+          # cancels old runs; an unchanged selective reload keeps them.
+          - repeat:
+              while: &same_recovery
+                - condition: template
+                  value_template: >-
+                    {% set s = states[recovery_entity] %}
+                    {{ s is not none and s.state == 'on'
+                       and as_timestamp(s.last_changed) == recovery_changed }}
+              sequence:
+                - variables:
+                    attempt_targets: '{{ [recovery_entity] }}'
+                - sequence: &attempt_shutdown
+                    - variables:
+                        attempted_shutdown: false
+                    - repeat:
+                        for_each: '{{ attempt_targets }}'
+                        sequence:
+                          - if:
+                              - condition: template
+                                value_template: >-
+                                  {% set target = states[repeat.item] %}
+                                  {% set ns = namespace(latest=0) %}
+                                  {% for r in timeout_rules %}
+                                    {% set motion = states[r.entity_id] %}
+                                    {% if motion is not none and motion.state == 'off' %}
+                                      {% set ns.latest = [ns.latest, as_timestamp(motion.last_changed)] | max %}
+                                    {% endif %}
+                                  {% endfor %}
+                                  {{ target is not none and target.state == 'on'
+                                     and (ns.latest >= as_timestamp(target.last_changed)
+                                       or (repeat.item == recovery_entity
+                                         and as_timestamp(target.last_changed) == recovery_changed)) }}
+                              - condition: template
+                                value_template: >-
+                                  {% set ns = namespace(latest=0, active=false, due=false) %}
+                                  {% for r in timeout_rules %}
+                                    {% set s = states[r.entity_id] %}
+                                    {% if s is not none and s.state == 'on' %}
+                                      {% set ns.active = true %}
+                                    {% elif s is not none and s.state == 'off' %}
+                                      {% set ns.latest = [ns.latest, as_timestamp(s.last_changed)] | max %}
+                                    {% endif %}
+                                  {% endfor %}
+                                  {% for r in timeout_rules %}
+                                    {% set s = states[r.entity_id] %}
+                                    {% if s is not none and s.state == 'off'
+                                      and as_timestamp(s.last_changed) >= ns.latest
+                                      and as_timestamp(now()) - as_timestamp(s.last_changed) >= r.seconds %}
+                                      {% set ns.due = true %}
+                                    {% endif %}
+                                  {% endfor %}
+                                  {{ ns.due and not ns.active }}
+                              - condition: and
+                                conditions: !input guards
+                            then:
+                              - variables:
+                                  attempted_shutdown: true
+                              # A failed sibling must not prevent later targets.
+                              - action: '{{ repeat.item.split(".")[0] }}.turn_off'
+                                target:
+                                  entity_id: '{{ repeat.item }}'
+                                data: '{{ entity_off_data.get(repeat.item, {}) }}'
+                                continue_on_error: true
+                    - if: '{{ attempted_shutdown }}'
+                      then:
+                        - sequence: !input after_actions
+                          continue_on_error: true
+                - if: *same_recovery
+                  then:
+                    # Wake immediately if this generation ends; otherwise retry
+                    # after one minute, rechecking all guards and motion timers.
+                    - wait_template: >-
+                        {% set s = states[recovery_entity] %}
+                        {{ s is none or s.state != 'on'
+                           or as_timestamp(s.last_changed) != recovery_changed }}
+                      timeout:
+                        seconds: 60
+                      continue_on_timeout: true
+    default:
+      - variables:
+          attempt_targets: !input target_entities
+      - sequence: *attempt_shutdown

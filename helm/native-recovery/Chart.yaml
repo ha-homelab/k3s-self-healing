@@ -1,0 +1,6 @@
+apiVersion: v2
+name: home-assistant-native-recovery
+description: Stopped HA Container with an offline native-backup restore workspace
+version: 0.1.0
+appVersion: '2026.9.1'
+type: application

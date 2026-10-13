@@ -1,0 +1,99 @@
+{
+  "node": "example-ha-node",
+  "nas_server": "192.0.2.20",
+  "nas_export": "/exports/k3s",
+  "retain_completed": 14,
+  "minimum_free_bytes": 5368709120,
+  "namespaces": [
+    "homeassistant"
+  ],
+  "claims": [
+    {
+      "name": "home-assistant",
+      "namespace": "homeassistant",
+      "claim": "home-assistant-home-assistant-0",
+      "exclude": [
+        "backups/**",
+        "tmp_backups/**",
+        "recorder_backup/**",
+        "home-assistant_v2.db",
+        "home-assistant_v2.db-wal",
+        "home-assistant_v2.db-shm",
+        "home-assistant-k3s-sideby.db",
+        "home-assistant-k3s-sideby.db-wal",
+        "home-assistant-k3s-sideby.db-shm",
+        "home-assistant.log",
+        "home-assistant.log.1",
+        "home-assistant.log.fault",
+        ".storage/mail_and_packages.email_cache"
+      ],
+      "generated_image_caches": [
+        "ha-camera-alerts",
+        "mail-and-packages"
+      ]
+    },
+    {
+      "name": "mosquitto",
+      "namespace": "homeassistant",
+      "claim": "mosquitto-data"
+    },
+    {
+      "name": "esphome",
+      "namespace": "homeassistant",
+      "claim": "esphome-config",
+      "exclude": [
+        ".cache/**"
+      ]
+    },
+    {
+      "name": "ring-mqtt",
+      "namespace": "homeassistant",
+      "claim": "ring-mqtt-data"
+    },
+    {
+      "name": "music-assistant-backups",
+      "namespace": "homeassistant",
+      "claim": "music-assistant-home-backups"
+    }
+  ],
+  "host_sources": [
+    {
+      "name": "k3s-server",
+      "path": "/var/lib/rancher/k3s/server",
+      "exclude": [
+        "db/etcd/**",
+        "db/etcd-broken/**",
+        "db/snapshots/**",
+        "logs/**",
+        "kine.sock",
+        "db/etcd-snapshots/**"
+      ]
+    }
+  ],
+  "api_collections": [
+    "/api/v1/namespaces",
+    "/api/v1/nodes",
+    "/api/v1/persistentvolumes",
+    "/api/v1/persistentvolumeclaims",
+    "/api/v1/services",
+    "/api/v1/endpoints",
+    "/api/v1/configmaps",
+    "/api/v1/secrets",
+    "/api/v1/serviceaccounts",
+    "/api/v1/pods",
+    "/apis/apps/v1/deployments",
+    "/apis/apps/v1/statefulsets",
+    "/apis/apps/v1/daemonsets",
+    "/apis/batch/v1/cronjobs",
+    "/apis/batch/v1/jobs",
+    "/apis/rbac.authorization.k8s.io/v1/clusterroles",
+    "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
+    "/apis/rbac.authorization.k8s.io/v1/roles",
+    "/apis/rbac.authorization.k8s.io/v1/rolebindings",
+    "/apis/networking.k8s.io/v1/networkpolicies",
+    "/apis/networking.k8s.io/v1/ingresses",
+    "/apis/networking.k8s.io/v1/ingressclasses",
+    "/apis/storage.k8s.io/v1/storageclasses",
+    "/apis/apiextensions.k8s.io/v1/customresourcedefinitions"
+  ]
+}

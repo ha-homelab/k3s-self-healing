@@ -1,0 +1,392 @@
+# Keep the coordinator, bounded workers and restart latch together as one package.
+# Only HACS update entities are eligible; HA Core and device firmware are excluded.
+# Core status is checked at every mutation boundary; its worker also gates on HACS activity.
+input_boolean:
+  hacs_maintenance_restart_pending:
+    name: HACS maintenance restart pending
+    icon: mdi:restart-alert
+  hacs_maintenance_install_succeeded:
+    name: HACS maintenance last installation succeeded
+    icon: mdi:check-circle
+
+script:
+  hacs_maintenance_backup:
+    alias: "HACS maintenance: create automatic backup"
+    description: >-
+      Use the configured automatic backup destinations and retention. The coordinator
+      verifies a fresh successful backup after this worker finishes.
+    mode: single
+    max_exceeded: warning
+    sequence:
+      # Missing status is safe only when the Core updater package is not installed.
+      - condition: template
+        value_template: >-
+          {% set core = states['update.home_assistant_core'] %}
+          {% set configured = states['input_text.core_update_notified_candidate'] is not none %}
+          {{ (core is none and not configured)
+             or (core is not none and core.state in ['on', 'off']
+                 and core.attributes.get('in_progress') is sameas false
+                 and core.attributes.get('stage') in ['idle', 'available', 'succeeded', 'failed']) }}
+      - action: backup.create_automatic
+
+  hacs_maintenance_install:
+    alias: "HACS maintenance: install one update"
+    description: >-
+      Install one available HACS update. A coordinator timeout leaves this worker
+      running so an in-flight download or file replacement is never cancelled.
+    mode: single
+    max_exceeded: warning
+    fields:
+      update_entity:
+        name: HACS update entity
+        description: An installed repository's HACS update entity.
+        required: true
+        selector:
+          entity:
+            integration: hacs
+            domain: update
+    sequence:
+      # Missing status is safe only when the Core updater package is not installed.
+      - condition: template
+        value_template: >-
+          {% set core = states['update.home_assistant_core'] %}
+          {% set configured = states['input_text.core_update_notified_candidate'] is not none %}
+          {{ (core is none and not configured)
+             or (core is not none and core.state in ['on', 'off']
+                 and core.attributes.get('in_progress') is sameas false
+                 and core.attributes.get('stage') in ['idle', 'available', 'succeeded', 'failed']) }}
+      - condition: template
+        value_template: >-
+          {{ update_entity in integration_entities('hacs')
+             and update_entity.startswith('update.')
+             and is_state(update_entity, 'on')
+             and state_attr(update_entity, 'in_progress') is sameas false }}
+      - action: update.install
+        target:
+          entity_id: "{{ update_entity }}"
+      # Persist this in the worker: it may finish after the coordinator timed out.
+      - if:
+          - condition: template
+            value_template: >-
+              {{ device_attr(update_entity, 'model') == 'integration'
+                 or update_entity == 'update.hacs_update'
+                 or 'Restart of Home Assistant required' in (state_attr(update_entity, 'release_summary') or '') }}
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.hacs_maintenance_restart_pending
+      # Version/progress alone cannot prove success if a post-install hook failed.
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.hacs_maintenance_install_succeeded
+
+automation:
+  - id: ha_homelab_hacs_maintenance_startup
+    alias: "HACS maintenance: clear restart request after startup"
+    description: Clear the restored restart latch only after Home Assistant starts.
+    mode: single
+    trace:
+      stored_traces: 5
+    triggers:
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: input_boolean.hacs_maintenance_restart_pending
+        state: "on"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.hacs_maintenance_restart_pending
+      - action: persistent_notification.create
+        data:
+          notification_id: hacs_maintenance_restart
+          title: HACS maintenance
+          message: >-
+            Home Assistant has started. The pending HACS restart request has been
+            cleared. See the maintenance result notification for update results.
+
+  - id: ha_homelab_hacs_maintenance_update
+    alias: "HACS maintenance: update repositories and restart once"
+    description: >-
+      Sunday at 06:00 Home Assistant local time, reuse a successful automatic backup
+      from the preceding four hours or create one, then install available HACS
+      updates sequentially and restart once if integrations require it.
+      Stop and notify on any failure or timeout.
+    mode: single
+    max_exceeded: warning
+    trace:
+      stored_traces: 5
+    triggers:
+      - trigger: time
+        at: "06:00:00"
+    variables:
+      backup_is_fresh: >-
+        {% set age = as_timestamp(now()) - as_timestamp(states('sensor.backup_last_successful_automatic_backup'), 0) %}
+        {{ 0 <= age <= 4 * 3600 }}
+      hacs_updates: >-
+        {{ integration_entities('hacs') | select('match', '^update[.]') | sort | list }}
+      pending_updates: >-
+        {% set ns = namespace(normal=[], hacs=[]) %}
+        {% for entity in hacs_updates %}
+          {% if is_state(entity, 'on') %}
+            {% if entity == 'update.hacs_update' %}
+              {% set ns.hacs = ns.hacs + [entity] %}
+            {% else %}
+              {% set ns.normal = ns.normal + [entity] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.normal + ns.hacs }}
+      restart_requested: >-
+        {% set ns = namespace(pending=is_state('input_boolean.hacs_maintenance_restart_pending', 'on')) %}
+        {% for entity in hacs_updates %}
+          {% if 'Restart of Home Assistant required' in (state_attr(entity, 'release_summary') or '') %}
+            {% set ns.pending = true %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.pending }}
+    conditions:
+      - condition: time
+        weekday: [sun]
+      - condition: template
+        value_template: "{{ pending_updates | count > 0 or restart_requested }}"
+    actions:
+      - if:
+          - condition: template
+            value_template: >-
+              {% set ns = namespace(busy=false) %}
+              {% set core = states['update.home_assistant_core'] %}
+              {% set configured = states['input_text.core_update_notified_candidate'] is not none %}
+              {% set core_safe = (core is none and not configured)
+                 or (core is not none and core.state in ['on', 'off']
+                     and core.attributes.get('in_progress') is sameas false
+                     and core.attributes.get('stage') in ['idle', 'available', 'succeeded', 'failed']) %}
+              {% for entity in hacs_updates %}
+                {% set progress = state_attr(entity, 'in_progress') %}
+                {% if progress is not none and progress is not sameas false %}
+                  {% set ns.busy = true %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.busy or not core_safe
+                 or not is_state('script.hacs_maintenance_backup', 'off')
+                 or not is_state('script.hacs_maintenance_install', 'off')
+                 or states('input_boolean.hacs_maintenance_restart_pending') not in ['on', 'off']
+                 or states('input_boolean.hacs_maintenance_install_succeeded') not in ['on', 'off']
+                 or not is_state('sensor.backup_backup_manager_state', 'idle') }}
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: hacs_maintenance_result
+              title: HACS maintenance stopped
+              message: >-
+                Another update or backup is running, Core update recovery is
+                required, or a required worker/status sensor is unavailable.
+                No maintenance was started. The next scheduled run will retry.
+          - stop: An update or backup is busy or unavailable.
+            error: true
+
+      - if:
+          - condition: template
+            value_template: "{{ pending_updates | count > 0 and not backup_is_fresh }}"
+        then:
+          - variables:
+              backup_before: "{{ states('sensor.backup_last_successful_automatic_backup') }}"
+              backup_started: "{{ as_timestamp(now()) | int }}"
+          - action: script.turn_on
+            target:
+              entity_id: script.hacs_maintenance_backup
+          - wait_template: >-
+              {{ is_state('script.hacs_maintenance_backup', 'off')
+                 and is_state('sensor.backup_backup_manager_state', 'idle')
+                 and states('sensor.backup_last_successful_automatic_backup') != backup_before
+                 and as_timestamp(states('sensor.backup_last_successful_automatic_backup'), 0) >= backup_started }}
+            timeout: "00:30:00"
+            continue_on_timeout: true
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ not wait.completed
+                     or not is_state('sensor.backup_backup_manager_state', 'idle')
+                     or states('sensor.backup_last_successful_automatic_backup') == backup_before
+                     or as_timestamp(states('sensor.backup_last_successful_automatic_backup'), 0) < backup_started }}
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: hacs_maintenance_result
+                  title: HACS maintenance stopped
+                  message: >-
+                    A new successful automatic backup was not confirmed within
+                    30 minutes. No HACS updates were started. Check Settings >
+                    System > Backups. Any running backup is left to finish.
+              - stop: A fresh successful backup is required before updating HACS.
+                error: true
+
+      - repeat:
+          for_each: "{{ pending_updates }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: >-
+                    {% set core = states['update.home_assistant_core'] %}
+                    {% set configured = states['input_text.core_update_notified_candidate'] is not none %}
+                    {{ not ((core is none and not configured)
+                       or (core is not none and core.state in ['on', 'off']
+                           and core.attributes.get('in_progress') is sameas false
+                           and core.attributes.get('stage') in ['idle', 'available', 'succeeded', 'failed'])) }}
+              then:
+                - action: persistent_notification.create
+                  data:
+                    notification_id: hacs_maintenance_result
+                    title: HACS maintenance stopped
+                    message: >-
+                      Core update status now prevents HACS maintenance. Remaining
+                      installations and the restart were deferred. Any in-flight
+                      installer is left to finish.
+                - stop: Core update is active, requires recovery, or is unavailable.
+                  error: true
+            - variables:
+                # Nested values retain exact version strings such as "2.0";
+                # standalone native templates can coerce them to numbers.
+                versions: >-
+                  {{ dict(target=state_attr(repeat.item, 'latest_version'),
+                          previous=state_attr(repeat.item, 'installed_version')) }}
+            - if:
+                - condition: template
+                  value_template: >-
+                    {{ not is_state(repeat.item, 'on')
+                       or state_attr(repeat.item, 'in_progress') is not sameas false
+                       or versions.target in [none, '', 'unknown', 'unavailable']
+                       or versions.previous in [none, '', 'unknown', 'unavailable']
+                       or versions.target == versions.previous }}
+              then:
+                - action: persistent_notification.create
+                  data:
+                    notification_id: hacs_maintenance_result
+                    title: HACS maintenance stopped
+                    message: >-
+                      {{ repeat.item }} changed or became unavailable before
+                      installation. Remaining updates and the restart were deferred.
+                - stop: The selected HACS update is no longer ready.
+                  error: true
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.hacs_maintenance_install_succeeded
+            - action: script.turn_on
+              target:
+                entity_id: script.hacs_maintenance_install
+              data:
+                variables:
+                  update_entity: "{{ repeat.item }}"
+            - wait_template: "{{ is_state('script.hacs_maintenance_install', 'off') }}"
+              timeout: "00:15:00"
+              continue_on_timeout: true
+            - if:
+                - condition: template
+                  value_template: >-
+                    {{ not wait.completed
+                       or not is_state('input_boolean.hacs_maintenance_install_succeeded', 'on')
+                       or states(repeat.item) not in ['on', 'off']
+                       or state_attr(repeat.item, 'in_progress') is not sameas false
+                       or state_attr(repeat.item, 'installed_version') != versions.target }}
+              then:
+                - action: persistent_notification.create
+                  data:
+                    notification_id: hacs_maintenance_result
+                    title: HACS maintenance stopped
+                    message: >-
+                      Could not confirm {{ repeat.item }} at {{ versions.target }}.
+                      Remaining updates and the restart were deferred. Any running
+                      installer is left to finish. Check the automation trace and HACS.
+                - stop: HACS installation failed, changed version, or timed out.
+                  error: true
+      - variables:
+          restart_needed: >-
+            {% set ns = namespace(pending=is_state('input_boolean.hacs_maintenance_restart_pending', 'on')) %}
+            {% for entity in hacs_updates %}
+              {% if 'Restart of Home Assistant required' in (state_attr(entity, 'release_summary') or '') %}
+                {% set ns.pending = true %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.pending }}
+      - action: persistent_notification.create
+        data:
+          notification_id: hacs_maintenance_result
+          title: HACS maintenance
+          message: >-
+            Updated {{ pending_updates | count }} HACS repositories{% if pending_updates %}:
+            {{ pending_updates | join(', ') }}{% endif %}.
+            {% if restart_needed %}A single Home Assistant restart is pending an idle window.
+            {% else %}No Home Assistant restart is required.{% endif %}
+      - if:
+          - condition: template
+            value_template: "{{ restart_needed }}"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.hacs_maintenance_restart_pending
+          - wait_template: >-
+              {% set ns = namespace(busy=false) %}
+              {% for entity in states.automation if entity.entity_id != this.entity_id %}
+                {% if entity.attributes.get('current', 0) | int(1) > 0 %}
+                  {% set ns.busy = true %}
+                {% endif %}
+              {% endfor %}
+              {% for entity in states.script %}
+                {% if entity.state == 'on' or entity.attributes.get('current', 0) | int(1) > 0 %}
+                  {% set ns.busy = true %}
+                {% endif %}
+              {% endfor %}
+              {% for entity in states.update %}
+                {% set progress = entity.attributes.get('in_progress') %}
+                {% if progress is not none and progress is not sameas false %}
+                  {% set ns.busy = true %}
+                {% endif %}
+              {% endfor %}
+              {% set core = states['update.home_assistant_core'] %}
+              {% set configured = states['input_text.core_update_notified_candidate'] is not none %}
+              {% set core_safe = (core is none and not configured)
+                 or (core is not none and core.state in ['on', 'off']
+                     and core.attributes.get('in_progress') is sameas false
+                     and core.attributes.get('stage') in ['idle', 'available', 'succeeded', 'failed']) %}
+              {{ not ns.busy and core_safe and is_state('sensor.backup_backup_manager_state', 'idle') }}
+            timeout: "00:30:00"
+            continue_on_timeout: true
+          - if:
+              - condition: template
+                value_template: "{{ not wait.completed }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: hacs_maintenance_restart
+                  title: HACS restart deferred
+                  message: >-
+                    Updates finished, but Home Assistant did not become idle within
+                    30 minutes. The restart request is saved for the next scheduled run.
+              - stop: No idle window for the HACS restart.
+                error: true
+          - condition: template
+            value_template: >-
+              {% set core = states['update.home_assistant_core'] %}
+              {% set configured = states['input_text.core_update_notified_candidate'] is not none %}
+              {{ (core is none and not configured)
+                 or (core is not none and core.state in ['on', 'off']
+                     and core.attributes.get('in_progress') is sameas false
+                     and core.attributes.get('stage') in ['idle', 'available', 'succeeded', 'failed']) }}
+          - action: persistent_notification.create
+            data:
+              notification_id: hacs_maintenance_restart
+              title: HACS maintenance
+              message: Updates finished. Restarting Home Assistant once to load integrations.
+          - action: homeassistant.restart
+            continue_on_error: true
+          # Successful shutdown cancels this run. Reaching this action means the
+          # restart was rejected or did not finish; keep the latch for a retry.
+          - delay: "00:02:00"
+          - action: persistent_notification.create
+            data:
+              notification_id: hacs_maintenance_restart
+              title: HACS restart failed
+              message: >-
+                Home Assistant did not restart within two minutes. The restart
+                request remains saved. Check configuration validation and the logs.

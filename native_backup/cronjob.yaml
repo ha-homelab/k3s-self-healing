@@ -1,0 +1,156 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ha-recorder-native-backup
+  namespace: homeassistant
+spec:
+  schedule: '30 3 * * 0'
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  startingDeadlineSeconds: 1800
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ha-recorder-native-backup
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: example-ha-node
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: prepare
+              image: "ghcr.io/home-assistant/home-assistant:2026.10.0@sha256:1b64d38f38d922bf9d59336451fd6453e1d614f934456af4ee3d2a51061be3a4"
+              command: [python, /code/runner.py, prepare]
+              securityContext: &security
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+                  # Read HA-owned private config for the capacity scan; no write bypass.
+                  add: [DAC_READ_SEARCH]
+              resources: &resources
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: '1'
+                  memory: 512Mi
+              volumeMounts: &mounts
+                - {name: config, mountPath: /ha-config}
+                - {name: work, mountPath: /work}
+                - {name: tmp, mountPath: /tmp}
+                - {name: code, mountPath: /code, readOnly: true}
+            - name: mysql-dump
+              # Official MySQL 8.4 LTS arm64 client, pinned to the inspected digest.
+              image: mysql@sha256:64a9d35fe6fed01159499be26c3279ac5ee16006c2ebb1f480d634bd5c61a053
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  set -o pipefail
+                  umask 077
+                  pending=/ha-config/backups/recorder-export-staging/recorder.sql.xz.pending
+                  # A failed size-limited pipeline must not consume disk until
+                  # the next weekly run; the verified export is a separate file.
+                  cleanup_failed_export() {
+                    status=$?
+                    if [ "$status" -ne 0 ]; then
+                      rm -f -- "$pending"
+                      if [ "$status" -eq 153 ]; then
+                        printf 'Recorder export exceeded its safe compressed size limit.\n' >&2
+                      fi
+                      printf 'Recorder export failed (exit %s); incomplete output removed; previous verified export retained.\n' "$status" >&2
+                    fi
+                  }
+                  trap cleanup_failed_export EXIT
+                  ulimit -c 0
+                  ulimit -f "$(cat /work/limit-blocks)"
+                  mysqldump --defaults-extra-file=/work/client.cnf \
+                    --single-transaction --quick --skip-lock-tables --no-tablespaces \
+                    --set-gtid-purged=OFF --column-statistics=0 --hex-blob \
+                    --default-character-set=utf8mb4 "$(cat /work/database)" \
+                    | xz --format=xz --check=crc64 -T1 -0 > "$pending"
+                  xz -t --format=xz "$pending"
+                  echo 'Transaction-consistent recorder export finished.'
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources: *resources
+              volumeMounts: *mounts
+          containers:
+            - name: native-backup
+              image: "ghcr.io/home-assistant/home-assistant:2026.10.0@sha256:1b64d38f38d922bf9d59336451fd6453e1d614f934456af4ee3d2a51061be3a4"
+              command: [python, /code/runner.py, finish]
+              env:
+                - {name: HA_URL, value: 'http://home-assistant.homeassistant.svc.cluster.local:8123'}
+                - {name: HA_TOKEN_FILE, value: /credentials/token}
+              securityContext: *security
+              resources: *resources
+              volumeMounts:
+                - {name: config, mountPath: /ha-config}
+                - {name: work, mountPath: /work}
+                - {name: tmp, mountPath: /tmp}
+                - {name: code, mountPath: /code, readOnly: true}
+                - {name: credentials, mountPath: /credentials, readOnly: true}
+          volumes:
+            - name: config
+              persistentVolumeClaim:
+                claimName: home-assistant-home-assistant-0
+            - name: work
+              emptyDir:
+                medium: Memory
+                sizeLimit: 16Mi
+            - name: tmp
+              emptyDir:
+                sizeLimit: 32Mi
+            - name: code
+              configMap:
+                name: ha-recorder-native-backup-code
+                defaultMode: 0444
+            - name: credentials
+              secret:
+                secretName: ha-recorder-native-backup-api
+                defaultMode: 0400
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ha-recorder-native-backup
+  namespace: homeassistant
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ha-recorder-native-backup
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - ipBlock: {cidr: 192.0.2.30/32}
+      ports:
+        - {protocol: TCP, port: 3306}
+    - to:
+        - ipBlock: {cidr: 192.0.2.10/32}
+        - ipBlock: {cidr: 10.43.0.0/16}
+      ports:
+        - {protocol: TCP, port: 8123}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}

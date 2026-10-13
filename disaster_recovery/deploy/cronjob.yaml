@@ -1,0 +1,179 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ha-disaster-recovery
+  namespace: ha-disaster-recovery
+spec:
+  schedule: 15 4 * * 0
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 21600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 5400
+      ttlSecondsAfterFinished: 604800
+      template:
+        metadata:
+          labels:
+            app: ha-disaster-recovery
+        spec:
+          serviceAccountName: recovery
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: example-ha-node
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: backup
+            image: ghcr.io/home-assistant/home-assistant@sha256:612d76760b544cb40b7ba01387fdac964c59a6a550a50a4d30b4773c822d2918
+            imagePullPolicy: IfNotPresent
+            command:
+            - python
+            - -m
+            - disaster_recovery.runner
+            workingDir: /opt
+            env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: '1'
+            - name: PYTHONUNBUFFERED
+              value: '1'
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: SOURCE_REVISION
+              value: set-by-deployment-script
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 750m
+                memory: 768Mi
+            securityContext:
+              runAsUser: 0
+              runAsGroup: 0
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+                add:
+                - DAC_READ_SEARCH
+            volumeMounts:
+            - name: source
+              mountPath: /opt/disaster_recovery
+              readOnly: true
+            - name: nas-source
+              mountPath: /nfs-source
+              readOnly: true
+            - name: output
+              mountPath: /backup
+            - name: host-etc
+              mountPath: /host/etc
+              readOnly: true
+            - name: host-bin
+              mountPath: /host/usr/local/bin
+              readOnly: true
+            - name: host-sbin
+              mountPath: /host/usr/local/sbin
+              readOnly: true
+            - name: host-ipfilter
+              mountPath: /host/usr/local/lib/ipfilter
+              readOnly: true
+            - name: host-k3s-server
+              mountPath: /host/var/lib/rancher/k3s/server
+              readOnly: true
+            - name: host-pv-data
+              mountPath: /host/var/lib/rancher/k3s/storage
+              readOnly: true
+            - name: host-zerotier
+              mountPath: /host/var/lib/zerotier-one
+              readOnly: true
+            - name: host-share
+              mountPath: /host/usr/share/hassio/share
+              readOnly: true
+            - name: host-media
+              mountPath: /host/usr/share/hassio/media
+              readOnly: true
+            - name: host-app-data
+              mountPath: /host/usr/share/hassio/apps/data
+              readOnly: true
+            - name: host-operator-ssh
+              mountPath: /host/home/example-operator/.ssh
+              readOnly: true
+            - name: host-root-ssh
+              mountPath: /host/root/.ssh
+              readOnly: true
+            - name: host-libexec
+              mountPath: /host/usr/local/libexec
+              readOnly: true
+          volumes:
+          - name: source
+            configMap:
+              name: recovery-source
+              defaultMode: 292
+          - name: nas-source
+            nfs:
+              server: 192.0.2.20
+              path: /exports/k3s
+              readOnly: true
+          - name: output
+            persistentVolumeClaim:
+              claimName: recovery-snapshots
+          - name: host-etc
+            hostPath:
+              path: /etc
+              type: Directory
+          - name: host-bin
+            hostPath:
+              path: /usr/local/bin
+              type: Directory
+          - name: host-sbin
+            hostPath:
+              path: /usr/local/sbin
+              type: Directory
+          - name: host-ipfilter
+            hostPath:
+              path: /usr/local/lib/ipfilter
+              type: Directory
+          - name: host-k3s-server
+            hostPath:
+              path: /var/lib/rancher/k3s/server
+              type: Directory
+          - name: host-pv-data
+            hostPath:
+              path: /var/lib/rancher/k3s/storage
+              type: Directory
+          - name: host-zerotier
+            hostPath:
+              path: /var/lib/zerotier-one
+              type: Directory
+          - name: host-share
+            hostPath:
+              path: /usr/share/hassio/share
+              type: Directory
+          - name: host-media
+            hostPath:
+              path: /usr/share/hassio/media
+              type: Directory
+          - name: host-app-data
+            hostPath:
+              path: /usr/share/hassio/apps/data
+              type: Directory
+          - name: host-operator-ssh
+            hostPath:
+              path: /home/example-operator/.ssh
+              type: Directory
+          - name: host-root-ssh
+            hostPath:
+              path: /root/.ssh
+              type: Directory
+          - name: host-libexec
+            hostPath:
+              path: /usr/local/libexec
+              type: Directory

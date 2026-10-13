@@ -1,0 +1,15 @@
+{
+  "node": "example-ha-node",
+  "lan_node": "example-lan-node",
+  "node_ipv4": "192.0.2.10",
+  "nas_ipv4": "192.0.2.20",
+  "database_ipv4": "192.0.2.30",
+  "kubernetes_service_ipv4": "10.43.0.1",
+  "nas_export": "/exports/k3s",
+  "storage_class": "local-path",
+  "recovery_storage_class": "example-nfs",
+  "timezone": "Etc/UTC",
+  "deployment_repository": "git@github.com:example/ha-deployment.git",
+  "enable_music_backup": false,
+  "recovery_components": ["home-assistant", "mosquitto"]
+}

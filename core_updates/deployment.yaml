@@ -1,0 +1,319 @@
+# Installer fills cluster addresses, PVC, node, labels and code/config checksum.
+# These objects do not modify the Home Assistant Helm release.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ha-core-updater
+  namespace: homeassistant
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ha-core-updater
+  namespace: homeassistant
+rules:
+  # Helm stores revisions as generated Secret names. Kubernetes RBAC cannot
+  # restrict create/list to a release-name prefix. This is namespace-scoped.
+  - apiGroups: ['']
+    resources: [secrets]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: ['']
+    resources: [configmaps, services, serviceaccounts, persistentvolumeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames: [home-assistant]
+    verbs: [update, patch]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: ['']
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    resourceNames: [ha-recorder-native-backup]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ha-core-updater
+  namespace: homeassistant
+subjects:
+  - kind: ServiceAccount
+    name: ha-core-updater
+    namespace: homeassistant
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ha-core-updater
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ha-core-updater-state
+  namespace: homeassistant
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ha-core-updater
+  namespace: homeassistant
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ha-core-updater
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ha-core-updater
+    spec:
+      serviceAccountName: ha-core-updater
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: example-ha-node
+      securityContext:
+        # HA private config is root-owned. Its PVC is mounted read-only here.
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: helm
+          image: ghcr.io/home-assistant/home-assistant@sha256:612d76760b544cb40b7ba01387fdac964c59a6a550a50a4d30b4773c822d2918
+          command:
+            - python
+            - -c
+            - |
+              import hashlib, io, os, platform, tarfile, urllib.request
+              hashes = {
+                  'x86_64': ('amd64', '1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb'),
+                  'aarch64': ('arm64', 'f14e804dfee240f55525b667488fe9adca349e63e00c9af634c0beb1421ac310'),
+              }
+              arch, expected = hashes[platform.machine()]
+              url = f'https://get.helm.sh/helm-v3.22.0-linux-{arch}.tar.gz'
+              with urllib.request.urlopen(url, timeout=120) as response:
+                  data = response.read(64 * 1024 * 1024 + 1)
+              if len(data) > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != expected:
+                  raise SystemExit('Helm archive checksum mismatch')
+              with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+                  member = archive.getmember(f'linux-{arch}/helm')
+                  if not member.isfile() or member.size > 128 * 1024 * 1024:
+                      raise SystemExit('Invalid Helm executable')
+                  binary = archive.extractfile(member).read()
+              with open('/tools/helm.pending', 'wb') as output:
+                  output.write(binary)
+              os.chmod('/tools/helm.pending', 0o555)
+              os.replace('/tools/helm.pending', '/tools/helm')
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 25m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          volumeMounts:
+            - {name: tools, mountPath: /tools}
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: updater
+          image: ghcr.io/home-assistant/home-assistant@sha256:612d76760b544cb40b7ba01387fdac964c59a6a550a50a4d30b4773c822d2918
+          command: [python, /app/server.py]
+          env:
+            - {name: CONFIG_PATH, value: /app/settings.json}
+            - {name: HA_URL, value: 'http://home-assistant.homeassistant.svc.cluster.local:8123'}
+            - {name: HA_TOKEN_FILE, value: /ha-api/token}
+            - {name: MQTT_HOST, value: mosquitto.homeassistant.svc.cluster.local}
+            - {name: PYTHONDONTWRITEBYTECODE, value: '1'}
+            - {name: PYTHONUNBUFFERED, value: '1'}
+            - {name: XDG_CACHE_HOME, value: /tmp/cache}
+            - {name: HELM_CACHE_HOME, value: /tmp/helm/cache}
+            - {name: HELM_CONFIG_HOME, value: /tmp/helm/config}
+            - {name: HELM_DATA_HOME, value: /tmp/helm/data}
+            - {name: PATH, value: '/tools:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin'}
+          ports:
+            - {name: http, containerPort: 8099}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: '1', memory: 768Mi}
+          volumeMounts:
+            - {name: code, mountPath: /app, readOnly: true}
+            - {name: state, mountPath: /state}
+            - {name: config, mountPath: /ha-config, readOnly: true}
+            - {name: api, mountPath: /ha-api, readOnly: true}
+            - {name: credentials, mountPath: /credentials, readOnly: true}
+            - {name: tools, mountPath: /tools, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            - {name: kube-api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
+      volumes:
+        - name: code
+          configMap:
+            name: ha-core-updater-code
+            defaultMode: 0444
+        - name: state
+          persistentVolumeClaim:
+            claimName: ha-core-updater-state
+        - name: config
+          persistentVolumeClaim:
+            claimName: home-assistant-home-assistant-0
+            readOnly: true
+        - name: api
+          secret:
+            secretName: ha-recorder-native-backup-api
+            defaultMode: 0400
+        - name: credentials
+          secret:
+            secretName: ha-core-updater-credentials
+            defaultMode: 0400
+        - name: tools
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        # Token is explicitly projected into the worker, never the download init.
+        - name: kube-api
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - {key: ca.crt, path: ca.crt}
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef: {apiVersion: v1, fieldPath: metadata.namespace}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ha-core-updater
+  namespace: homeassistant
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ha-core-updater
+  ports:
+    - {name: http, port: 8099, targetPort: http}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ha-core-updater
+  namespace: homeassistant
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ha-core-updater
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 192.0.2.10/32}
+        - podSelector:
+            matchLabels: {app: home-assistant}
+      ports:
+        - {protocol: TCP, port: 8099}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # Installer replaces the API destinations using the kubernetes Service and
+    # Endpoints, keeping private-address HTTPS separate from Internet HTTPS.
+    - to:
+        - ipBlock: {cidr: 10.43.0.1/32}
+        - ipBlock: {cidr: 192.0.2.10/32}
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 6443}
+    - to:
+        - ipBlock: {cidr: 192.0.2.10/32}
+        - podSelector:
+            matchLabels: {app: home-assistant}
+      ports:
+        - {protocol: TCP, port: 8123}
+    - to:
+        - podSelector:
+            matchLabels: {app: mosquitto}
+      ports:
+        - {protocol: TCP, port: 1883}
+    # Public HTTPS: release metadata, registry manifests, Helm download, git.
+    # GitHub SSH uses the same external-only destination class and pinned hosts.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4]
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 22}
+---
+# Validation Jobs use the target image with a read-only snapshot/config mount.
+# They must not start integrations or contact the live home/network. Public
+# HTTPS permits the target's requirement installer to fetch Python packages.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ha-core-preflight
+  namespace: homeassistant
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ha-core-preflight
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4]
+      ports:
+        - {protocol: TCP, port: 443}

@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ring-mqtt-data
+  namespace: homeassistant
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ring-mqtt
+  namespace: homeassistant
+  labels:
+    app: ring-mqtt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ring-mqtt
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ring-mqtt
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: example-ha-node
+      containers:
+      - name: ring-mqtt
+        image: tsightler/ring-mqtt:5.9.3
+        ports:
+        - containerPort: 8554
+          name: rtsp
+        env:
+        - name: TZ
+          value: Etc/UTC
+        envFrom:
+        - secretRef:
+            name: ring-mqtt-env
+            optional: false
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: '1'
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: ring-mqtt-data
+      automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ring-mqtt
+  namespace: homeassistant
+spec:
+  selector:
+    app: ring-mqtt
+  ports:
+  - port: 8554
+    targetPort: 8554
+    name: rtsp

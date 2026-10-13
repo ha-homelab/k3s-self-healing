@@ -1,0 +1,30 @@
+script:
+  notify_optional:
+    alias: Send an optional notification
+    description: Skip unconfigured providers and isolate delivery failures.
+    mode: parallel
+    max: 20
+    fields:
+      notify_service:
+        required: true
+        selector:
+          text:
+      notify_data:
+        required: true
+        selector:
+          object:
+    sequence:
+      - condition: template
+        value_template: >-
+          {{ notify_service is string
+             and notify_service.startswith('notify.')
+             and notify_service.count('.') == 1 }}
+      - action: python_script.notification_service_available
+        data:
+          service: '{{ notify_service }}'
+        response_variable: notification_service
+      - condition: template
+        value_template: '{{ notification_service.available }}'
+      - action: '{{ notify_service }}'
+        continue_on_error: true
+        data: '{{ notify_data }}'

@@ -1,0 +1,22 @@
+"""Exercise leak detection using generated synthetic identifiers."""
+from pathlib import Path
+import sys
+import unittest
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+from privacy_scan import findings
+
+
+class PrivacyTests(unittest.TestCase):
+    def test_phone_and_hardware_address_are_rejected_without_echo(self):
+        values = ['+' + '1' + '2025550199', ':'.join(['aa', 'bb', 'cc', 'dd', 'ee', 'ff'])]
+        for value in values:
+            result = findings('fixture', value)
+            self.assertTrue(result)
+            self.assertNotIn(value, str(result))
+
+    def test_device_model_and_github_authorship_are_allowed(self):
+        self.assertEqual(findings('fixture', 'iPhone Air; @4alvit; git@github.com:ha-homelab/k3s-self-healing.git'), [])
+
+    def test_documentation_address_allowed_private_endpoint_rejected(self):
+        self.assertFalse(findings('fixture', 'http://192.0.2.10:8123'))
+        self.assertTrue(findings('fixture', 'http://' + '.'.join(['192', '168', '77', '42'])))

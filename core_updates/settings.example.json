@@ -1,0 +1,15 @@
+{
+  "namespace": "homeassistant",
+  "ha_url": "http://home-assistant.homeassistant.svc.cluster.local:8123",
+  "mqtt_host": "mosquitto.homeassistant.svc.cluster.local",
+  "config_pvc": "home-assistant-home-assistant-0",
+  "preflight_empty_dirs": [],
+  "repository": "git@github.com:example/ha-deployment.git",
+  "chart_version": "0.3.80",
+  "chart_url": "https://github.com/pajikos/home-assistant-helm-chart/releases/download/home-assistant-0.3.80/home-assistant-0.3.80.tgz",
+  "chart_sha256": "e33397554fef42e54b95411db0171dee028e742e7abcc441e9566806efa21a05",
+  "required_domains": [
+    "mqtt"
+  ],
+  "health_timeout_seconds": 900
+}

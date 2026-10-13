@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: music-assistant-home-backups
+  namespace: homeassistant
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: example-nfs
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: music-assistant-home-backup
+  namespace: homeassistant
+spec:
+  schedule: 45 3 * * 0
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 21600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1500
+      ttlSecondsAfterFinished: 604800
+      template:
+        spec:
+          nodeSelector:
+            kubernetes.io/hostname: example-lan-node
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+          - name: backup
+            image: ghcr.io/music-assistant/server:2.10.2@sha256:09c02b4ee491976efa6d698265f72571f064031bb1a2c9a1c32e104392209690
+            command:
+            - python
+            - -m
+            - disaster_recovery.music
+            workingDir: /opt
+            env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: '1'
+            - name: SOURCE_REVISION
+              value: set-by-deployment-script
+            resources:
+              requests:
+                cpu: 25m
+                memory: 64Mi
+              limits:
+                cpu: 250m
+                memory: 384Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+              seccompProfile:
+                type: RuntimeDefault
+            volumeMounts:
+            - name: source
+              mountPath: /opt/disaster_recovery
+              readOnly: true
+            - name: data
+              mountPath: /data
+              readOnly: true
+            - name: backup
+              mountPath: /backup
+          volumes:
+          - name: source
+            configMap:
+              name: music-recovery-source
+          - name: data
+            persistentVolumeClaim:
+              claimName: music-assistant-home-data
+          - name: backup
+            persistentVolumeClaim:
+              claimName: music-assistant-home-backups
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+            runAsUser: 0
+            runAsGroup: 0

@@ -1,0 +1,194 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: recovery
+  namespace: ha-disaster-recovery
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ha-disaster-recovery-reader
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  - nodes
+  - persistentvolumes
+  - persistentvolumeclaims
+  - services
+  - endpoints
+  - configmaps
+  - secrets
+  - serviceaccounts
+  - pods
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  - daemonsets
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - batch
+  resources:
+  - cronjobs
+  - jobs
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  - clusterrolebindings
+  - roles
+  - rolebindings
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  - ingresses
+  - ingressclasses
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - storageclasses
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+- nonResourceURLs:
+  - /version
+  verbs:
+  - get
+- apiGroups:
+  - acme.cert-manager.io
+  resources:
+  - challenges
+  - orders
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificaterequests
+  - certificates
+  - clusterissuers
+  - issuers
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - externaldns.k8s.io
+  resources:
+  - dnsendpoints
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - helm.cattle.io
+  resources:
+  - helmchartconfigs
+  - helmcharts
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - k3s.cattle.io
+  resources:
+  - addons
+  - etcdsnapshotfiles
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - traefik.containo.us
+  resources:
+  - ingressroutes
+  - ingressroutetcps
+  - ingressrouteudps
+  - middlewares
+  - middlewaretcps
+  - serverstransports
+  - tlsoptions
+  - tlsstores
+  - traefikservices
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - traefik.io
+  resources:
+  - ingressroutes
+  - ingressroutetcps
+  - ingressrouteudps
+  - middlewares
+  - middlewaretcps
+  - serverstransports
+  - serverstransporttcps
+  - tlsoptions
+  - tlsstores
+  - traefikservices
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ha-disaster-recovery-reader
+subjects:
+- kind: ServiceAccount
+  name: recovery
+  namespace: ha-disaster-recovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ha-disaster-recovery-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: recovery-mqtt-checkpoint
+  namespace: homeassistant
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods/exec
+  verbs:
+  - get
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: recovery-mqtt-checkpoint
+  namespace: homeassistant
+subjects:
+- kind: ServiceAccount
+  name: recovery
+  namespace: ha-disaster-recovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: recovery-mqtt-checkpoint

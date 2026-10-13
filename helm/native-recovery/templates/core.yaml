@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-config
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.storageSize }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  serviceName: {{ .Release.Name }}
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels: {app: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: smartthings-time-guard
+          image: {{ .Values.image | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - >-
+              python -m venv --system-site-packages --without-pip /python;
+              cp /usr/src/homeassistant/homeassistant/components/smartthings/time.py /patched/time.py;
+              python /guard/50-smartthings-null-time.py /patched/time.py
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: '1', memory: 128Mi}
+          volumeMounts:
+            - {name: python, mountPath: /python}
+            - {name: patched, mountPath: /patched}
+            - {name: guard, mountPath: /guard, readOnly: true}
+        - name: go2rtc-startup-guard
+          image: {{ .Values.image | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - >-
+              cp /usr/src/homeassistant/homeassistant/components/go2rtc/server.py /patched/go2rtc-server.py;
+              python /go2rtc-guard/51-go2rtc-startup.py /patched/go2rtc-server.py
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: '1', memory: 128Mi}
+          volumeMounts:
+            - {name: patched, mountPath: /patched}
+            - {name: go2rtc-guard, mountPath: /go2rtc-guard, readOnly: true}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.nodeName | quote }}
+      hostNetwork: {{ .Values.hostNetwork }}
+      dnsPolicy: {{ ternary "ClusterFirstWithHostNet" "ClusterFirst" .Values.hostNetwork }}
+      containers:
+        - name: home-assistant
+          image: {{ .Values.image | quote }}
+          # Start Core directly so the image's S6 init need not write its root filesystem.
+          # Custom integration dependencies need a writable Python environment.
+          # The image exports UV_SYSTEM_PYTHON; unset it so uv uses this venv.
+          command:
+            - /bin/sh
+            - -ec
+            - >-
+              unset UV_SYSTEM_PYTHON UV_PYTHON;
+              export PATH="/python/bin:$PATH";
+              exec /python/bin/python -m homeassistant --config /config
+          env:
+            - {name: TZ, value: Etc/UTC}
+            - {name: PYTHONDONTWRITEBYTECODE, value: '1'}
+            - {name: XDG_CACHE_HOME, value: /tmp/cache}
+            - {name: VIRTUAL_ENV, value: /python}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          ports: [{name: http, containerPort: 8123}]
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {cpu: '4', memory: 6Gi}
+          volumeMounts:
+            - {name: python, mountPath: /python}
+            - {name: config, mountPath: /config, subPath: config}
+            - {name: config, mountPath: /share, subPath: share}
+            - {name: runtime, mountPath: /tmp}
+            - {name: patched, mountPath: /usr/src/homeassistant/homeassistant/components/smartthings/time.py, subPath: time.py, readOnly: true}
+            - {name: patched, mountPath: /usr/src/homeassistant/homeassistant/components/go2rtc/server.py, subPath: go2rtc-server.py, readOnly: true}
+          startupProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 10
+            failureThreshold: 180
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 15
+      volumes:
+        - name: python
+          emptyDir: {sizeLimit: 2Gi}
+        - name: guard
+          configMap:
+            name: ha-smartthings-time-guard
+        - name: patched
+          emptyDir: {}
+        - name: go2rtc-guard
+          configMap:
+            name: ha-go2rtc-startup-guard
+        - name: runtime
+          emptyDir: {sizeLimit: 512Mi}
+        - name: config
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  selector: {app: {{ .Release.Name }}}
+  ports: [{name: http, port: 8123, targetPort: http}]
+{{- if .Values.workspace }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-restore
+  labels: {app: {{ .Release.Name }}-restore}
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: {{ .Values.nodeName | quote }}
+  securityContext:
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: workspace
+      image: {{ .Values.image | quote }}
+      command: [sleep, infinity]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: '1', memory: 512Mi}
+      volumeMounts:
+        - {name: data, mountPath: /restore}
+        - {name: tmp, mountPath: /tmp}
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: {{ .Release.Name }}-config
+    - name: tmp
+      emptyDir: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-restore-offline
+spec:
+  podSelector:
+    matchLabels: {app: {{ .Release.Name }}-restore}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
+{{- end }}

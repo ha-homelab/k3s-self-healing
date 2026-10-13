@@ -1,0 +1,8 @@
+# Deliberately stopped until archive verification and old-instance fencing.
+replicas: 0
+nodeName: example-ha-node
+image: ghcr.io/home-assistant/home-assistant:2026.9.1
+storageClass: local-path
+storageSize: 20Gi
+hostNetwork: false
+workspace: true

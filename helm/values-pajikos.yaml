@@ -1,0 +1,75 @@
+# Render with tools/render.py and a local site profile.
+replicaCount: 1
+controller:
+  type: StatefulSet
+image:
+  repository: ghcr.io/home-assistant/home-assistant
+  tag: 2026.10.0@sha256:1b64d38f38d922bf9d59336451fd6453e1d614f934456af4ee3d2a51061be3a4
+  pullPolicy: IfNotPresent
+hostNetwork: false
+dnsPolicy: ClusterFirst
+hostPort:
+  enabled: false
+service:
+  type: ClusterIP
+  port: 8123
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  storageClass: local-path
+nodeSelector:
+  kubernetes.io/hostname: example-ha-node
+affinity: {}
+podSecurityContext: {}
+env:
+- name: TZ
+  value: Etc/UTC
+configuration:
+  enabled: true
+  forceInit: false
+  trusted_proxies: []
+  templateConfig: "default_config:\nhomeassistant:\n  name: Home\n"
+ingress:
+  enabled: false
+addons:
+  codeserver:
+    enabled: false
+additionalVolumes: []
+additionalMounts: []
+startupProbe:
+  httpGet:
+    path: /
+    port: http
+    scheme: HTTP
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 180
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: 300
+  periodSeconds: 60
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 30
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+    scheme: HTTP
+  initialDelaySeconds: 60
+  periodSeconds: 15
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 40
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: '2'
+    memory: 2Gi

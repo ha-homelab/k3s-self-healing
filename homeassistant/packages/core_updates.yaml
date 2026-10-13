@@ -1,0 +1,276 @@
+# HA Core approvals. The worker owns releases, backups, installation, and recovery.
+# MQTT attributes are status only; the authenticated approval transport is separate.
+
+rest_command:
+  core_update_approve:
+    url: !secret ha_core_updater_approve_url
+    method: POST
+    timeout: 15
+    headers:
+      authorization: !secret ha_core_updater_authorization
+    content_type: application/json
+    payload: >-
+      {{ {'action': 'install', 'target_version': target_version,
+          'candidate_id': candidate_id} | to_json }}
+
+input_text:
+  core_update_notified_candidate:
+    name: Core update last notified candidate
+    max: 64
+  core_update_notified_result:
+    name: Core update last notified result
+    max: 96
+
+script:
+  core_update_approve:
+    alias: "Home Assistant: approve a specific Core update"
+    description: >-
+      Approve only the exact version and candidate shown in a notification.
+      The external worker revalidates this pair and accepts it at most once.
+    icon: mdi:update
+    mode: single
+    fields:
+      candidate_id:
+        name: Candidate ID
+        required: true
+        selector:
+          text:
+      target_version:
+        name: Version shown in the notification
+        required: true
+        selector:
+          text:
+    sequence:
+      - condition: template
+        value_template: >-
+          {% set maintenance = namespace(busy=false) %}
+          {% for entity in states.automation
+             if entity.attributes.get('id') == 'ha_homelab_hacs_maintenance_update' %}
+            {% if entity.state not in ['on', 'off'] or entity.attributes.get('current', 0) | int(1) > 0 %}
+              {% set maintenance.busy = true %}
+            {% endif %}
+          {% endfor %}
+          {% for entity in [states['script.hacs_maintenance_backup'], states['script.hacs_maintenance_install']]
+             if entity is not none %}
+            {% if entity.state != 'off' or entity.attributes.get('current', 0) | int(1) > 0 %}
+              {% set maintenance.busy = true %}
+            {% endif %}
+          {% endfor %}
+          {{ not maintenance.busy and candidate_id is defined and candidate_id is string
+             and candidate_id | length == 32
+             and candidate_id | regex_match('^[0-9a-f]+$')
+             and target_version is defined and target_version is string
+             and is_state('update.home_assistant_core', 'on')
+             and state_attr('update.home_assistant_core', 'stage') == 'available'
+             and not state_attr('update.home_assistant_core', 'in_progress')
+             and candidate_id == state_attr('update.home_assistant_core', 'candidate_id')
+             and target_version == state_attr('update.home_assistant_core', 'target_version')
+             and target_version == state_attr('update.home_assistant_core', 'latest_version') }}
+      - variables:
+          approval:
+            status: 0
+      - action: rest_command.core_update_approve
+        continue_on_error: true
+        data:
+          candidate_id: '{{ candidate_id }}'
+          target_version: '{{ target_version }}'
+        response_variable: approval
+      - if:
+          - condition: template
+            value_template: '{{ approval.status | int(0) == 202 }}'
+        then:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: core_update_available
+          - action: persistent_notification.create
+            data:
+              notification_id: core_update_status
+              title: Home Assistant update approved
+              message: >-
+                Version {{ target_version }} has been approved. The independent
+                updater is preparing its backup and preflight checks. Home
+                Assistant will be temporarily unavailable during installation.
+        else:
+          - action: persistent_notification.create
+            data:
+              notification_id: core_update_status
+              title: >-
+                {{ 'Home Assistant update approval not confirmed' if approval.status | int(0) == 0
+                   else 'Home Assistant update was not accepted' }}
+              message: >-
+                {% if approval.status | int(0) == 0 %}
+                  The updater did not return a usable response for {{ target_version }}.
+                  It may already have accepted this request. Check the current
+                  update status before trying again; this script will not retry.
+                {% else %}
+                  The updater did not accept version {{ target_version }}
+                  (HTTP {{ approval.status | int(0) }}). Review the current update
+                  status before trying again. No newer version was approved by
+                  this request.
+                {% endif %}
+
+automation:
+  - id: ha_homelab_core_update_available
+    alias: "Home Assistant: announce an available Core update"
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: state
+        entity_id: update.home_assistant_core
+      - trigger: homeassistant
+        event: start
+    actions:
+      - variables:
+          candidate: "{{ state_attr('update.home_assistant_core', 'candidate_id') }}"
+          version: "{{ state_attr('update.home_assistant_core', 'target_version') }}"
+      - condition: template
+        value_template: >-
+          {{ is_state('update.home_assistant_core', 'on')
+             and state_attr('update.home_assistant_core', 'stage') == 'available'
+             and not state_attr('update.home_assistant_core', 'in_progress')
+             and candidate is string and candidate | length == 32
+             and candidate | regex_match('^[0-9a-f]+$')
+             and version is string
+             and version == state_attr('update.home_assistant_core', 'latest_version')
+             and states('input_text.core_update_notified_candidate') != candidate }}
+      - action: persistent_notification.create
+        data:
+          notification_id: core_update_available
+          title: 'Home Assistant {{ version }} is available'
+          message: >-
+            Installed: {{ state_attr('update.home_assistant_core', 'installed_version') }}.
+            Review [release notes](https://github.com/home-assistant/core/releases/tag/{{ version }})
+            and [update status](/core-updates/overview). Choose Install in the phone
+            notification or use the Core Updates dashboard to approve exactly {{ version }}. Later or dismissing
+            this notification does not install anything. The updater creates a
+            backup and checks configuration before it restarts Home Assistant.
+      - action: script.notify_optional
+        data:
+          notify_service: !secret optional_phone_notify_service
+          notify_data:
+            title: 'Home Assistant {{ version }} is available'
+            message: >-
+              Approve {{ version }}? Backup and configuration checks run first;
+              Home Assistant will restart during installation.
+            data:
+              tag: core_update_available
+              url: /core-updates/overview
+              actions:
+                - action: '{{ "HA_CORE:INSTALL:" ~ candidate ~ ":" ~ version }}'
+                  title: 'Install {{ version }}'
+                  authenticationRequired: true
+                - action: '{{ "HA_CORE:LATER:" ~ candidate ~ ":" ~ version }}'
+                  title: Later
+                - action: URI
+                  title: Review update
+                  uri: /core-updates/overview
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.core_update_notified_candidate
+        data:
+          value: '{{ candidate }}'
+
+  - id: ha_homelab_core_update_mobile_action
+    alias: "Home Assistant: handle an explicit Core update decision"
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+    actions:
+      - variables:
+          decision: '{{ trigger.event.data.action | default("") }}'
+      - condition: template
+        value_template: '{{ decision is string and decision.startswith("HA_CORE:") }}'
+      - variables:
+          parts: '{{ decision.split(":") }}'
+      - condition: template
+        value_template: >-
+          {{ parts | length == 4 and parts[0] == 'HA_CORE'
+             and parts[1] in ['INSTALL', 'LATER']
+             and parts[2] | length == 32
+             and parts[2] | regex_match('^[0-9a-f]+$')
+             and is_state('update.home_assistant_core', 'on')
+             and state_attr('update.home_assistant_core', 'stage') == 'available'
+             and not state_attr('update.home_assistant_core', 'in_progress')
+             and parts[2] == state_attr('update.home_assistant_core', 'candidate_id')
+             and parts[3] == state_attr('update.home_assistant_core', 'target_version')
+             and parts[3] == state_attr('update.home_assistant_core', 'latest_version') }}
+      - choose:
+          - conditions: '{{ parts[1] == "INSTALL" }}'
+            sequence:
+              - action: script.core_update_approve
+                data:
+                  candidate_id: '{{ parts[2] }}'
+                  target_version: '{{ parts[3] }}'
+          - conditions: '{{ parts[1] == "LATER" }}'
+            sequence:
+              - action: persistent_notification.dismiss
+                data:
+                  notification_id: core_update_available
+              - action: script.notify_optional
+                data:
+                  notify_service: !secret optional_phone_notify_service
+                  notify_data:
+                    message: clear_notification
+                    data:
+                      tag: core_update_available
+
+  - id: ha_homelab_core_update_result
+    alias: "Home Assistant: report the Core update result"
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: state
+        entity_id: update.home_assistant_core
+      - trigger: homeassistant
+        event: start
+    actions:
+      - variables:
+          candidate: "{{ state_attr('update.home_assistant_core', 'candidate_id') }}"
+          version: "{{ state_attr('update.home_assistant_core', 'target_version') }}"
+          stage: "{{ state_attr('update.home_assistant_core', 'stage') }}"
+      - condition: template
+        value_template: >-
+          {{ states('update.home_assistant_core') not in ['unavailable', 'unknown']
+             and candidate is string and candidate | length == 32
+             and candidate | regex_match('^[0-9a-f]+$')
+             and stage in ['succeeded', 'failed', 'recovery_required']
+             and states('input_text.core_update_notified_result') != candidate ~ ':' ~ stage }}
+      - variables:
+          result_title: >-
+            {% if stage == 'succeeded' %}Home Assistant {{ version }} updated
+            {% elif stage == 'recovery_required' %}Home Assistant update needs recovery
+            {% else %}Home Assistant update failed{% endif %}
+          result_message: >-
+            {% if stage == 'succeeded' %}
+              Version {{ version }} passed the updater's post-install checks.
+            {% else %}
+              Version {{ version }} did not complete successfully.
+              {{ state_attr('update.home_assistant_core', 'last_error') | default('Review the updater status.', true) }}
+              {% if stage == 'recovery_required' %}
+                Manual recovery is required. Do not start another update.
+              {% endif %}
+            {% endif %}
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: core_update_available
+      - action: persistent_notification.create
+        data:
+          notification_id: core_update_status
+          title: '{{ result_title }}'
+          message: '{{ result_message }} [Update status](/core-updates/overview).'
+      - action: script.notify_optional
+        data:
+          notify_service: !secret optional_phone_notify_service
+          notify_data:
+            title: '{{ result_title }}'
+            message: '{{ result_message }}'
+            data:
+              tag: core_update_available
+              url: /core-updates/overview
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.core_update_notified_result
+        data:
+          value: "{{ candidate ~ ':' ~ stage }}"

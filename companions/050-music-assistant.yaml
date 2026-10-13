@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: music-assistant-home-data
+  namespace: homeassistant
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: music-assistant
+  namespace: homeassistant
+  labels:
+    app: music-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: music-assistant
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: music-assistant
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: example-lan-node
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: music-assistant
+        image: ghcr.io/music-assistant/server:2.10.2@sha256:09c02b4ee491976efa6d698265f72571f064031bb1a2c9a1c32e104392209690
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8095
+        env:
+        - name: TZ
+          value: Etc/UTC
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+          seccompProfile:
+            type: RuntimeDefault
+        resources:
+          requests:
+            cpu: 500m
+            memory: 256Mi
+          limits:
+            cpu: 1500m
+            memory: 1536Mi
+        readinessProbe:
+          tcpSocket:
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: music-assistant-home-data
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsUser: 0
+        runAsGroup: 0
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: music-assistant
+  namespace: homeassistant
+spec:
+  type: ClusterIP
+  selector:
+    app: music-assistant
+  ports:
+  - name: http
+    port: 8095
+    targetPort: http

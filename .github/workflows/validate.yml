@@ -1,0 +1,44 @@
+name: Validate public source
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.14'
+      - run: pip install -r requirements-validation.txt
+      - run: python tools/validate.py
+      - run: python -m unittest discover -s tests
+      - name: Render synthetic installation
+        run: |
+          mkdir -p "$RUNNER_TEMP/public-render"
+          python tools/render.py --profile examples/site.example.json companions > "$RUNNER_TEMP/public-render/companions.yaml"
+          python tools/render.py --profile examples/site.example.json recovery > "$RUNNER_TEMP/public-render/recovery.yaml"
+      - name: Scan public source and rendered manifests for secrets
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.30.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9 dir /repo --redact --no-banner
+          docker run --rm -v "$RUNNER_TEMP/public-render:/rendered:ro" ghcr.io/gitleaks/gitleaks:v8.30.0@sha256:691af3c7c5a48b16f187ce3446d5f194838f91238f27270ed36eef6359a574d9 dir /rendered --redact --no-banner
+  home-assistant:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Run package scenarios in the pinned Home Assistant runtime
+        run: |
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=512m \
+            -e PYTHONDONTWRITEBYTECODE=1 -e REQUIRE_HA_RUNTIME=1 -v "$PWD:/work:ro" -w /work --entrypoint python \
+            ghcr.io/home-assistant/home-assistant:2026.10.0@sha256:1b64d38f38d922bf9d59336451fd6453e1d614f934456af4ee3d2a51061be3a4 \
+            -m unittest discover -s runtime_tests -v
