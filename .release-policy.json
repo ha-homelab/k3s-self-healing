@@ -24,7 +24,7 @@
   "versioning": {
     "schema": 1,
     "promotion": "promote-bytes",
-    "toolkit_revision": "5e413f80a4353d328b4529eae57992ac3987e2dd",
+    "toolkit_revision": "8c0743a8db82adb291eee77cbe4d9bfd07218ee3",
     "files": [
       {
         "path": "SOURCE_VERSION",
@@ -42,6 +42,7 @@
     ]
   },
   "fuzzing": {
-    "toolkit_ref": "5e413f80a4353d328b4529eae57992ac3987e2dd"
-  }
+    "toolkit_ref": "8c0743a8db82adb291eee77cbe4d9bfd07218ee3"
+  },
+  "release_contract_python": "3.14"
 }

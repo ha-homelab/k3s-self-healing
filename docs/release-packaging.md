@@ -95,3 +95,8 @@ tooling and generated contract tests are explicitly listed in `publication.json`
 and receive the same privacy scan. The only added scanner allowance is the
 reserved synthetic `example.test` email domain used by a version-parser test;
 real email domains and nonregular/binary source inputs remain rejected.
+
+The complete archive acceptance suite runs on Python 3.14, matching the public
+source and release-build jobs. `.release-policy.json` sets
+`release_contract_python` to `3.14`; this preserves native capacity checks that
+use `Path.full_match` rather than skipping them under an older interpreter.
