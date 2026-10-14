@@ -114,6 +114,7 @@
     "runtime_tests/test_optional_notifications.py",
     "scripts/change_scope.py",
     "scripts/deploy-disaster-recovery.py",
+    "scripts/fuzz_python_preflight.py",
     "scripts/install-core-updater.py",
     "scripts/install-native-backup.py",
     "scripts/merge_oci_archives.py",
