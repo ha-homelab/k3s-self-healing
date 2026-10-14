@@ -30,7 +30,8 @@ MANIFEST = ".github/fuzz.json"
 JOB = "fuzz / RC fuzzing"
 REPORT = "fuzz-report.json"
 RUN_LOG = "run.log"
-SHA = re.compile(r"[a-f0-9]{40}")
+SHA_PATTERN = r"[a-f0-9]{40}"
+SHA = re.compile(SHA_PATTERN)
 CORPUS_FILES = 10000
 CORPUS_BYTES = 64 * 1024 * 1024
 
@@ -138,7 +139,7 @@ def manifest(root: Path) -> dict:
     if "go-version-file" in data:
         if data["language"] != "go":
             raise ValueError("go-version-file is only valid for Go")
-        confined(root, relative(data["go-version-file"]))
+        go_module_directory(root, data["go-version-file"])
     names = set()
     for target in data["targets"]:
         validate_target(root, target, names)
@@ -152,6 +153,13 @@ def confined(root: Path, value: str) -> Path:
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError("Fuzz path resolves outside source")
     return path
+
+
+def go_module_directory(root: Path, value: str) -> Path:
+    version_file = confined(root, relative(value))
+    if not version_file.is_file() or version_file.is_symlink():
+        raise ValueError("go-version-file must be an existing regular file without symlinks")
+    return version_file.parent
 
 
 def event_contract(event: dict, event_name: str, ref: str, repository: str, sha: str) -> None:
@@ -216,6 +224,8 @@ def verify_python_proof(proof: object, target: dict) -> None:
                 for function in item["functions"]]
     if not isinstance(proof, dict) or proof.get("target") != target["name"] or not expected:
         raise ValueError("Python instrumentation evidence differs from declared functions")
+    if proof.get("engine") != "atheris" or type(proof.get("executions")) is not int or proof["executions"] <= 0:
+        raise ValueError("Python preflight evidence requires positive engine execution metrics")
     actual = proof.get("instrumentation")
     if not isinstance(actual, list) or any(not isinstance(item, dict) for item in actual):
         raise ValueError("Malformed Python instrumentation evidence")
@@ -270,9 +280,11 @@ def corpus_walk_error(error: OSError) -> None:
     raise error
 
 
-def corpus_files(source: Path):
+def corpus_files(source: Path, *, required: bool = False):
     """Walk regular inputs without silently dropping unreadable directories."""
     for current, directories, files in os.walk(source, followlinks=False, onerror=corpus_walk_error):
+        if required and any((Path(current) / name).is_symlink() for name in [*directories, *files]):
+            raise ValueError("Declared preflight corpus must not contain symlinks")
         directories[:] = sorted(name for name in directories if not (Path(current) / name).is_symlink())
         for name in sorted(files):
             path = Path(current) / name
@@ -288,7 +300,7 @@ def retain_corpus(source: Path, destination: Path, *, required: bool = False) ->
         raise ValueError("Declared preflight corpus must be an existing directory without symlinks")
     if not source.is_dir() or source.is_symlink():
         return result
-    for path in corpus_files(source):
+    for path in corpus_files(source, required=required):
         size = path.stat().st_size
         if result["files"] >= CORPUS_FILES or result["bytes"] + size > CORPUS_BYTES:
             result["truncated"] = True
@@ -345,7 +357,9 @@ def run_target(root: Path, output: Path, target: dict, *, go_version_file: str |
     target_dir.mkdir()
     corpus = target_dir / "corpus"
     if "corpus" in target:
-        shutil.copytree(confined(root, target["corpus"]), corpus)
+        retained = retain_corpus(confined(root, target["corpus"]), corpus, required=True)
+        if retained["truncated"]:
+            raise ValueError("Committed fuzz corpus exceeds the bounded input budget")
     else:
         corpus.mkdir()
     command = list(target["command"])
@@ -367,7 +381,7 @@ def run_target(root: Path, output: Path, target: dict, *, go_version_file: str |
         # selected toolchain's cache; do not include compiled objects or modules.
         # A target may invoke Go through a Python/build adapter. Query the Go
         # selected on PATH in the declared module, never the adapter executable.
-        go_cwd = confined(root, go_version_file).parent if go_version_file else cwd
+        go_cwd = go_module_directory(root, go_version_file) if go_version_file else cwd
         cache = subprocess.check_output(["go", "env", "GOCACHE"], cwd=go_cwd, text=True, timeout=30).strip()  # nosec B603, B607
         metrics["generated_corpus"] = retain_corpus(Path(cache) / "fuzz", target_dir / "go-generated-corpus")
     return {"name": name, "seconds": seconds, "exit_code": code, "elapsed_seconds": elapsed, **metrics}
@@ -379,7 +393,7 @@ def preflight_changed_paths(root: Path, event_name: str, event: dict) -> list[st
     base, head, separator = change_scope.event_revisions(event_name, event)
     if not isinstance(base, str) or not isinstance(head, str):
         raise ValueError("Git revisions must be full object IDs")
-    if not re.fullmatch(r"[a-f0-9]{40}", base) or not re.fullmatch(r"[a-f0-9]{40}", head) or separator not in {"..", "..."}:
+    if not re.fullmatch(SHA_PATTERN, base) or not re.fullmatch(SHA_PATTERN, head) or separator not in {"..", "..."}:
         raise ValueError("Git revisions must be full object IDs with a fixed range separator")
     # Fixed Git query; the range contains only validated hex object IDs.
     raw = subprocess.check_output(  # nosec B603, B607
@@ -400,11 +414,11 @@ def preflight_needed(root: Path, data: dict) -> bool:
     required = data.get("preflight-paths", [])
     if not required or "." in required:
         return True
-    required = [*required, ".github/fuzz.json", ".github/requirements-fuzz.txt", ".release-policy.json",
+    required = [*required, ".github/fuzz.json", ".github/requirements-fuzz.txt", ".release-policy.json", "scripts/change_scope.py",
                 "scripts/release_fuzz.py", "scripts/fuzz_python_preflight.py", ".github/workflows"]
     try:
         changed = preflight_changed_paths(root, event_name, event)
-    except (ValueError, KeyError, subprocess.SubprocessError):
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError):
         return True
     return any(path == wanted or path.startswith(wanted + "/") for path in changed for wanted in required)
 
@@ -435,7 +449,12 @@ def replay_python_target(root: Path, output: Path, target: dict, deadline: float
                                target_dir / RUN_LOG, 90, True, deadline)
     if code or not report_path.is_file():
         raise ValueError(f"Deterministic Python preflight failed: {target['name']}")
-    return json.loads(report_path.read_text())
+    metrics = engine_metrics("atheris", (target_dir / RUN_LOG).read_text(errors="replace"))
+    if not metrics["executions"]:
+        raise ValueError(f"Python preflight requires positive engine execution metrics: {target['name']}")
+    proof = {**json.loads(report_path.read_text()), **metrics}
+    report_path.write_text(json.dumps(proof, indent=2) + "\n")
+    return proof
 
 
 def preflight_python(root: Path, output: Path, data: dict, deadline: float) -> list:
@@ -457,8 +476,17 @@ def preflight_python(root: Path, output: Path, data: dict, deadline: float) -> l
     return proofs
 
 
+def validate_python_preflight(data: dict) -> None:
+    if data["language"] == "python" and any(
+        target["engine"] != "atheris" or len(target["command"]) < 2 or not target.get("instrumentation")
+        for target in data["targets"]
+    ):
+        raise ValueError("Python preflight requires Atheris scripts with production instrumentation declarations")
+
+
 def run_preflight(root: Path, output: Path, data: dict, *, setup: bool) -> dict:
     """Replay fixed seeds only; native campaigns are never built by default."""
+    validate_python_preflight(data)
     output.mkdir(parents=True, exist_ok=False)
     deadline = time.monotonic() + 240
     if setup and data["language"] == "python":
@@ -482,6 +510,7 @@ def campaign(root: Path, output: Path) -> None:
     event_contract(event, os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REF"],
                    os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"])
     data = manifest(root)
+    validate_python_preflight(data)
     # Fixed read-only Git query using the runner's selected toolchain.
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()  # nosec B603, B607
     if actual != os.environ["GITHUB_SHA"]:
