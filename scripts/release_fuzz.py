@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 # Reviewed build and fuzz commands use argv arrays, never shell interpolation.
 import subprocess  # nosec B404
 import time
@@ -265,27 +266,40 @@ def engine_metrics(engine: str, log: str) -> dict:
     return metrics
 
 
-def retain_corpus(source: Path, destination: Path) -> dict:
-    """Copy only bounded regular corpus inputs, never symlinks or a build cache."""
-    result = {"files": 0, "bytes": 0, "truncated": False}
-    destination.mkdir(parents=True, exist_ok=True)
-    if not source.is_dir() or source.is_symlink():
-        return result
-    for current, directories, files in os.walk(source, followlinks=False):
+def corpus_walk_error(error: OSError) -> None:
+    raise error
+
+
+def corpus_files(source: Path):
+    """Walk regular inputs without silently dropping unreadable directories."""
+    for current, directories, files in os.walk(source, followlinks=False, onerror=corpus_walk_error):
         directories[:] = sorted(name for name in directories if not (Path(current) / name).is_symlink())
         for name in sorted(files):
             path = Path(current) / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            size = path.stat().st_size
-            if result["files"] >= CORPUS_FILES or result["bytes"] + size > CORPUS_BYTES:
-                result["truncated"] = True
-                return result
-            target = destination / path.relative_to(source)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(path, target)
-            result["files"] += 1
-            result["bytes"] += size
+            if stat.S_ISREG(path.lstat().st_mode):
+                yield path
+
+
+def retain_corpus(source: Path, destination: Path, *, required: bool = False) -> dict:
+    """Copy only bounded regular corpus inputs, never symlinks or a build cache."""
+    result = {"files": 0, "bytes": 0, "truncated": False}
+    destination.mkdir(parents=True, exist_ok=True)
+    if required and (not source.is_dir() or source.is_symlink()):
+        raise ValueError("Declared preflight corpus must be an existing directory without symlinks")
+    if not source.is_dir() or source.is_symlink():
+        return result
+    for path in corpus_files(source):
+        size = path.stat().st_size
+        if result["files"] >= CORPUS_FILES or result["bytes"] + size > CORPUS_BYTES:
+            result["truncated"] = True
+            return result
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+        result["files"] += 1
+        result["bytes"] += size
+    if required and not result["files"]:
+        raise ValueError("Declared preflight corpus must contain at least one regular seed file")
     return result
 
 
@@ -325,7 +339,7 @@ def execute(command: list[str], cwd: Path, output: Path, timeout: int, isolated:
     return code, round(time.monotonic() - start, 3)
 
 
-def run_target(root: Path, output: Path, target: dict) -> dict:
+def run_target(root: Path, output: Path, target: dict, *, go_version_file: str | None = None) -> dict:
     name, seconds = target["name"], target["seconds"]
     target_dir = output / name
     target_dir.mkdir()
@@ -351,7 +365,10 @@ def run_target(root: Path, output: Path, target: dict) -> dict:
                 shutil.copytree(path, target_dir / f"go-regressions-{index}")
         # Native Go keeps coverage discoveries outside testdata/fuzz. Resolve the
         # selected toolchain's cache; do not include compiled objects or modules.
-        cache = subprocess.check_output([target["command"][0], "env", "GOCACHE"], cwd=cwd, text=True, timeout=30).strip()  # nosec B603
+        # A target may invoke Go through a Python/build adapter. Query the Go
+        # selected on PATH in the declared module, never the adapter executable.
+        go_cwd = confined(root, go_version_file).parent if go_version_file else cwd
+        cache = subprocess.check_output(["go", "env", "GOCACHE"], cwd=go_cwd, text=True, timeout=30).strip()  # nosec B603, B607
         metrics["generated_corpus"] = retain_corpus(Path(cache) / "fuzz", target_dir / "go-generated-corpus")
     return {"name": name, "seconds": seconds, "exit_code": code, "elapsed_seconds": elapsed, **metrics}
 
@@ -381,7 +398,7 @@ def preflight_needed(root: Path, data: dict) -> bool:
     if event_name not in {"pull_request", "merge_group", "push"}:
         return False
     required = data.get("preflight-paths", [])
-    if not required:
+    if not required or "." in required:
         return True
     required = [*required, ".github/fuzz.json", ".github/requirements-fuzz.txt", ".release-policy.json",
                 "scripts/release_fuzz.py", "scripts/fuzz_python_preflight.py", ".github/workflows"]
@@ -404,7 +421,7 @@ def replay_python_target(root: Path, output: Path, target: dict, deadline: float
     target_dir.mkdir()
     corpus = target_dir / "corpus"
     if "corpus" in target:
-        retained = retain_corpus(confined(root, target["corpus"]), corpus)
+        retained = retain_corpus(confined(root, target["corpus"]), corpus, required=True)
         if retained["truncated"]:
             raise ValueError("Committed preflight corpus exceeds the bounded input budget")
     else:
@@ -484,7 +501,7 @@ def campaign(root: Path, output: Path) -> None:
                 raise ValueError(f"Fuzz build/setup {index} failed with {code}")
         report["preflight"] = run_preflight(root, output / "preflight", data, setup=False)
         for target in data["targets"]:
-            report["targets"].append(run_target(root, output, target))
+            report["targets"].append(run_target(root, output, target, go_version_file=data.get("go-version-file")))
         if any(t["exit_code"] for t in report["targets"]):
             raise ValueError("One or more fuzz targets failed; inspect diagnostics")
         report["status"] = "passed"

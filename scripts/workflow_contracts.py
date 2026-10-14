@@ -358,9 +358,15 @@ def validate_release_scope(scope):
         )
 
 
-def validate_release_gate(gate):
+def validate_release_gate(gate, workflow=None):
     """Require the shared fail-closed gate with all dependency results."""
     commands = [step for step in gate.get("steps", []) if "run" in step]
+    execution_overrides = {"shell", "working-directory"}
+    for scope in (workflow or {}, gate):
+        if execution_overrides.intersection(scope.get("defaults", {}).get("run", {})):
+            raise ValueError("Release validation gate cannot override its shell or working-directory")
+    if any(execution_overrides.intersection(step) for step in commands):
+        raise ValueError("Release validation gate cannot override its shell or working-directory")
     if (
         gate.get("name") != "CI gate"
         or gate.get("if") != "${{ always() }}"
@@ -414,7 +420,7 @@ def validate_release_channels(policy, workflows):
     validate_release_baseline(jobs, workflows[QUALITY_GATE]["jobs"])
     validate_beta_callers(jobs, beta)
     validate_release_scope(jobs["scope"])
-    validate_release_gate(jobs["gate"])
+    validate_release_gate(jobs["gate"], wrapper)
     caller = workflows.get(RELEASE_PIPELINE, {}).get("jobs", {}).get("checks", {})
     if (
         caller.get("uses") != LOCAL_WORKFLOW_PREFIX + name

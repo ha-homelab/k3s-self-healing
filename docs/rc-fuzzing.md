@@ -81,7 +81,10 @@ or `libfuzzer`), argument-array `command`, and `seconds` (1–120). Optional `cw
 is relative to the repository. Optional `corpus` names a committed seed directory;
 the runner copies it before mutation. Go uses its native `testdata/fuzz` corpus.
 The total mutation budget is at most 600 seconds across at most 12 targets.
-`go-version-file` is optional, Go-only and relative to the repository.
+`go-version-file` is optional, Go-only and relative to the repository. For a
+Go target launched through a build adapter, declare the module file and use the
+selected `go` on `PATH`; generated-corpus discovery queries `go env GOCACHE` in
+that module directory, not the adapter executable.
 
 ## Deterministic checks before mutation
 
@@ -100,19 +103,25 @@ check. This proves instrumentation for the declared functions, not full program
 coverage. The harness keeps responsibility for its offline dependency adapters.
 
 The preflight first runs `pip check`, then replays committed corpus inputs with
-`-runs=0`; no timed mutation campaign runs. Every RC performs these checks before
+`-runs=0`; no timed mutation campaign runs. An explicitly declared corpus must
+be an existing directory with at least one regular seed file; missing, empty or
+unreadable inputs fail the preflight. A zero-byte seed file remains a valid input.
+Every RC performs these checks before
 mutation. Python adopters also reuse the existing CI configuration job for this
 cheap check on relevant pull-request, merge-group and push changes. The job
 caches pip downloads keyed by the requirements file; installation still requires
 the reviewed hashes. `preflight-paths` is an optional list of literal source
-files or directories, without globs or trailing slashes. Fuzz manifests, locks,
+files or directories, without globs or trailing slashes. The path `.` selects
+every change. Fuzz manifests, locks,
 CI workflows and shared helpers always count as relevant. Unavailable diff
 evidence runs the check; documentation-only unrelated changes can skip it.
 
 Optional top-level `preflight` is a list of reviewed deterministic command argv
 arrays, for example `[["node", "--test", "fuzz/parser.test.mjs"]]`. Each command
 has a 90-second cap and the whole preflight, including Python dependency setup,
-has a four-minute cap. Native targets do not repeat their build setup in ordinary
+has a four-minute cap. The enclosing Python configuration job has a ten-minute
+cap to preserve time for checkout, existing contracts and failure diagnostics.
+Native targets do not repeat their build setup in ordinary
 CI: keep fixed-seed regression tests in their existing language test job. Explicit
 preflight commands also run in the isolated RC environment after its build.
 
