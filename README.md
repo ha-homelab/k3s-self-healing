@@ -1,5 +1,7 @@
 # Home Assistant on k3s: recovery and maintenance
 
+[![Fuzzing: RC only](https://img.shields.io/badge/fuzzing-RC_only-blue)](docs/fuzzing.md)
+
 Portable Home Assistant Container deployment recipes, companion services,
 approval-gated Core updates, verified backups, and recovery tools.
 
@@ -91,11 +93,13 @@ workstation timestamps, private source revision mapping, or runtime data.
 
 Original project code is MIT licensed. See `NOTICE` for upstream dependencies.
 
-## Candidate validation preparation
+## RC fuzz qualification
 
-[Bounded backup contract targets](docs/fuzzing.md) replay synthetic metadata and
-reviewed-profile mutations through the pure validators. The planned source
-release integration is documented in [the lifecycle design](docs/release-lifecycle-design.md).
+[Bounded backup contract targets](docs/fuzzing.md) qualify release candidates by
+mutating synthetic metadata and reviewed profiles through the pure validators.
+The badge identifies RC-only capability; reports bind qualification to the source
+commit. See [the release lifecycle](docs/release-lifecycle-design.md) for the
+source release boundaries and separate installation acceptance.
 
 ## Source candidate releases
 
