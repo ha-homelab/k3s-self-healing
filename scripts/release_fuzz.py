@@ -351,6 +351,20 @@ def execute(command: list[str], cwd: Path, output: Path, timeout: int, isolated:
     return code, round(time.monotonic() - start, 3)
 
 
+def retain_go_diagnostics(root: Path, cwd: Path, target_dir: Path, go_version_file: str | None) -> dict:
+    """Save native Go failures and bounded coverage discoveries separately."""
+    for index, path in enumerate(cwd.rglob("testdata/fuzz")):
+        if path.is_dir():
+            shutil.copytree(path, target_dir / f"go-regressions-{index}")
+    # Native Go keeps coverage discoveries outside testdata/fuzz. Resolve the
+    # selected toolchain's cache; do not include compiled objects or modules.
+    # A target may invoke Go through a Python/build adapter. Query the Go
+    # selected on PATH in the declared module, never the adapter executable.
+    go_cwd = go_module_directory(root, go_version_file) if go_version_file else cwd
+    cache = subprocess.check_output(["go", "env", "GOCACHE"], cwd=go_cwd, text=True, timeout=30).strip()  # nosec B603, B607
+    return retain_corpus(Path(cache) / "fuzz", target_dir / "go-generated-corpus")
+
+
 def run_target(root: Path, output: Path, target: dict, *, go_version_file: str | None = None) -> dict:
     name, seconds = target["name"], target["seconds"]
     target_dir = output / name
@@ -374,16 +388,7 @@ def run_target(root: Path, output: Path, target: dict, *, go_version_file: str |
     if code == 0 and not metrics["executions"]:
         code = 125
     if target["engine"] == "go":
-        for index, path in enumerate(cwd.rglob("testdata/fuzz")):
-            if path.is_dir():
-                shutil.copytree(path, target_dir / f"go-regressions-{index}")
-        # Native Go keeps coverage discoveries outside testdata/fuzz. Resolve the
-        # selected toolchain's cache; do not include compiled objects or modules.
-        # A target may invoke Go through a Python/build adapter. Query the Go
-        # selected on PATH in the declared module, never the adapter executable.
-        go_cwd = go_module_directory(root, go_version_file) if go_version_file else cwd
-        cache = subprocess.check_output(["go", "env", "GOCACHE"], cwd=go_cwd, text=True, timeout=30).strip()  # nosec B603, B607
-        metrics["generated_corpus"] = retain_corpus(Path(cache) / "fuzz", target_dir / "go-generated-corpus")
+        metrics["generated_corpus"] = retain_go_diagnostics(root, cwd, target_dir, go_version_file)
     return {"name": name, "seconds": seconds, "exit_code": code, "elapsed_seconds": elapsed, **metrics}
 
 
