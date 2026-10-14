@@ -42,7 +42,7 @@
     ]
   },
   "fuzzing": {
-    "toolkit_ref": "0b674066266512c6ff1f72b5d98d36b4ea42141c"
+    "toolkit_ref": "dad8abd50a1c6bc2d5caf37507117968ab13fcad"
   },
   "release_contract_python": "3.14"
 }
