@@ -95,6 +95,9 @@ Original project code is MIT licensed. See `NOTICE` for upstream dependencies.
 
 ## RC fuzz qualification
 
+The published [v0.1.2-rc.1 release](https://github.com/ha-homelab/k3s-self-healing/releases/tag/v0.1.2-rc.1)
+contains the qualification report for that tag's exact source commit.
+
 [Bounded backup contract targets](docs/fuzzing.md) qualify release candidates by
 mutating synthetic metadata and reviewed profiles through the pure validators.
 The badge identifies RC-only capability; reports bind qualification to the source
