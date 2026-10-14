@@ -43,6 +43,7 @@ class PublicSourcePackageTests(unittest.TestCase):
             "Reviewed source fixture",
         )
         self.policy = json.loads((self.root / ".release-policy.json").read_text())
+        self.base_version = version_plan.read_base_version(ROOT, self.policy)
 
     def command(self, *args):
         return subprocess.check_output(
@@ -50,9 +51,9 @@ class PublicSourcePackageTests(unittest.TestCase):
         )
 
     def freeze(self, channel):
-        (self.root / "SOURCE_VERSION").write_text("0.1.2\n")
+        (self.root / "SOURCE_VERSION").write_text(self.base_version + "\n")
         plan = version_plan.create_plan(
-            "0.1.2",
+            self.base_version,
             channel,
             7,
             self.command("git", "rev-parse", "HEAD").strip(),
@@ -86,7 +87,7 @@ class PublicSourcePackageTests(unittest.TestCase):
                 archive = package_release.build(
                     self.root,
                     output / f"k3s-self-healing-v{version}.tar.gz",
-                    "0.1.2",
+                    self.base_version,
                     channel,
                 )
                 staged = stage_release_assets.stage(
@@ -111,15 +112,15 @@ class PublicSourcePackageTests(unittest.TestCase):
         previous = readme.read_bytes()
         readme.write_text("unreviewed change\n")
         with self.assertRaisesRegex(ValueError, "Only the frozen"):
-            package_release.require_source(self.root, "0.1.2", "beta")
+            package_release.require_source(self.root, self.base_version, "beta")
         readme.write_bytes(previous)
         (self.root / "unreviewed.txt").write_text("synthetic untracked source")
         with self.assertRaisesRegex(ValueError, "Only the frozen"):
-            package_release.require_source(self.root, "0.1.2", "beta")
+            package_release.require_source(self.root, self.base_version, "beta")
 
     def test_candidate_requires_frozen_plan(self):
         with self.assertRaisesRegex(ValueError, "frozen release plan"):
-            package_release.require_source(self.root, "0.1.2", "rc")
+            package_release.require_source(self.root, self.base_version, "rc")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.3] - 2026-10-14
+
+### Changed
+
+- Validate each public release candidate with bounded, network-isolated fuzz campaigns against its exact source revision.
+- Require positive engine execution counts, instrumented production code and validated seed corpora; retain source-bound reports and diagnostic evidence.
+- Run deterministic seed and configuration checks in ordinary CI without starting mutation campaigns on betas.
+
+### Upgrade
+
+Use the existing installation procedure, preserve local configuration and keep the previous accepted package for rollback. This maintenance release updates release validation and does not change the application configuration format. Deployment and applicable device or integration acceptance remain separate from publication.
+
+### Security
+
+The release gate rejects absent or invalid fuzz evidence and unsafe seed inputs. No application vulnerability or new target-device acceptance is claimed by these tooling changes.
+
 ## [0.1.2]
 
 ### Added
