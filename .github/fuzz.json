@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "language": "python",
+  "setup": [
+    [
+      "python3",
+      "-m",
+      "venv",
+      ".fuzz-venv"
+    ],
+    [
+      ".fuzz-venv/bin/python",
+      "-m",
+      "pip",
+      "install",
+      "--require-hashes",
+      "--only-binary=:all:",
+      "-r",
+      ".github/requirements-fuzz.txt"
+    ]
+  ],
+  "targets": [
+    {
+      "name": "recorder-metadata",
+      "engine": "atheris",
+      "command": [
+        ".fuzz-venv/bin/python",
+        "fuzz/fuzz_recorder_metadata.py",
+        "-max_len=4096"
+      ],
+      "seconds": 60,
+      "corpus": "fuzz/corpus/recorder-metadata"
+    },
+    {
+      "name": "runtime-contract",
+      "engine": "atheris",
+      "command": [
+        ".fuzz-venv/bin/python",
+        "fuzz/fuzz_runtime_contract.py",
+        "-max_len=4096"
+      ],
+      "seconds": 60,
+      "corpus": "fuzz/corpus/runtime-contract"
+    }
+  ]
+}

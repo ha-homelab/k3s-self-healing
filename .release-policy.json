@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "repository": "ha-homelab/k3s-self-healing",
+  "visibility": "public",
+  "mode": "release",
+  "default_branch": "main",
+  "version_file": "SOURCE_VERSION",
+  "validation_workflows": [
+    "validate.yml"
+  ],
+  "artifact_pattern": "release-assets*",
+  "local_checks": [
+    "python3 tools/validate.py",
+    "python3 -m unittest discover -s tests"
+  ],
+  "single_entry_ci": true,
+  "release_notes": "CHANGELOG.md",
+  "container_assets": {},
+  "notes": [
+    "The original deterministic source archive and companion SHA-256 file are retained. Publication inventory, privacy checks, imported HA source integrity and all existing source/runtime checks remain required.",
+    "SOURCE_VERSION identifies the portable source collection; independently versioned Helm chart, upstream HA releases and imported-source locks are preserved.",
+    "Only a verified frozen SOURCE_VERSION overlay may differ from the committed snapshot. Ordinary local packaging still requires an entirely clean commit. No restore, cluster mutation, deployment or physical acceptance is performed."
+  ],
+  "versioning": {
+    "schema": 1,
+    "promotion": "promote-bytes",
+    "toolkit_revision": "8c0743a8db82adb291eee77cbe4d9bfd07218ee3",
+    "files": [
+      {
+        "path": "SOURCE_VERSION",
+        "format": "text",
+        "value": "package"
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "k3s-self-healing-v*.tar.gz",
+        "format": "tar-text",
+        "member": "k3s-self-healing/SOURCE_VERSION",
+        "value": "package"
+      }
+    ]
+  },
+  "fuzzing": {
+    "toolkit_ref": "8c0743a8db82adb291eee77cbe4d9bfd07218ee3"
+  },
+  "release_contract_python": "3.14"
+}

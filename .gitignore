@@ -8,3 +8,14 @@ build/
 site.json
 .env
 *.log
+
+# Local bounded fuzz runner
+.fuzz-venv/
+fuzz-results/
+
+# Frozen source-release overlays and verified outputs
+.release-plan.json
+.release-inputs.json
+release-dist/
+release-assets/
+.releases/

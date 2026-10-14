@@ -23,7 +23,7 @@ def findings(name, text):
         for match in pattern.finditer(text):
             value = match.group()
             if rule == 'email' and (value == 'git@github.com' or value.endswith(
-                    ('@example.com', '@example.invalid', '@users.noreply.github.com'))):
+                    ('@example.com', '@example.invalid', '@example.test', '@users.noreply.github.com'))):
                 continue
             if rule == 'ipv4':
                 try:
