@@ -39,3 +39,33 @@ required. Passing these targets does not establish live backup completion,
 restore success, storage capacity, HA compatibility beyond the reviewed profile,
 or installation approval. Those require the documented installation acceptance
 procedure using the exact candidate and separately retained operator evidence.
+
+
+## Deterministic preflight in ordinary CI
+
+For relevant changes in a public repository, the existing CI configuration
+contract job installs the hash-locked Python 3.12 fuzz dependencies, runs
+`pip check`, and replays the committed corpus with Atheris `-runs=0`.
+This is deterministic seed replay: it does not start the timed mutation
+campaign. Timed fuzzing remains exclusive to release candidates. The shared
+preflight has a four-minute total budget, including dependency setup.
+
+The `preflight-paths` entries in `.github/fuzz.json` select the relevant
+production, dependency and harness changes. Shared contract, manifest and
+workflow changes also trigger this check; missing comparison history runs
+the check conservatively. Unrelated changes can skip this extra replay.
+
+Before replay, the shared helper verifies that the following declarations
+refer to project-local Python functions already instrumented by the
+harness. Missing import instrumentation fails the check instead of
+silently counting executions with incomplete feedback:
+
+- `native_backup.dump_format.validate_metadata`
+- `native_backup.dump_format.known_dump`
+- `native_backup.contract.validate_snapshot`
+- `native_backup.contract.source_digest`
+
+Update these declarations when production functions move or are renamed.
+They prove that the selected code is instrumented; they do not prove
+exhaustive path coverage. Keep positive and rejected-input corpus cases
+and independent semantic assertions alongside the existing unit tests.

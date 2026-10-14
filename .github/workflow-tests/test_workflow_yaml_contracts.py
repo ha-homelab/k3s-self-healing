@@ -39,6 +39,44 @@ class WorkflowYAMLTests(unittest.TestCase):
         result = yaml.load("on: push\nvalue: true\n", Loader=CONTRACTS.UniqueKeyLoader)  # nosec B506 - BaseLoader subclass, no object construction
         self.assertEqual(result, {"on": "push", "value": "true"})
 
+    def test_release_gate_cannot_ignore_job_or_command_failure(self):
+        source = """name: CI gate
+if: ${{ always() }}
+steps:
+  - run: python3 scripts/release_validation.py gate --channel "$RELEASE_CHANNEL"
+    env:
+      RESULTS: ${{ toJSON(needs) }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+"""
+        for scope in ("job", "step"):
+            for value in (None, "false", "true", "${{ inputs.ignore_failure }}"):
+                with self.subTest(scope=scope, value=value):
+                    gate = yaml.load(source, Loader=CONTRACTS.UniqueKeyLoader)  # nosec B506
+                    target = gate if scope == "job" else gate["steps"][0]
+                    if value is not None:
+                        target["continue-on-error"] = value
+                    if value in (None, "false"):
+                        CONTRACTS.validate_release_gate(gate)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "fail-closed profile gate"):
+                            CONTRACTS.validate_release_gate(gate)
+
+    def test_release_gate_command_cannot_be_conditionally_skipped(self):
+        gate = {
+            "name": "CI gate",
+            "if": "${{ always() }}",
+            "steps": [{
+                "run": 'python3 scripts/release_validation.py gate --channel "$RELEASE_CHANNEL"',
+                "env": {"RESULTS": "${{ toJSON(needs) }}", "RELEASE_CHANNEL": "${{ inputs.channel }}"},
+            }],
+        }
+        CONTRACTS.validate_release_gate(gate)
+        for condition in ("false", "${{ false }}", "${{ inputs.run_gate }}", "${{ success() }}"):
+            with self.subTest(condition=condition):
+                gate["steps"][0]["if"] = condition
+                with self.assertRaisesRegex(ValueError, "fail-closed profile gate"):
+                    CONTRACTS.validate_release_gate(gate)
+
     def test_non_string_mapping_keys_are_rejected(self):
         with self.assertRaises(ValueError):
             yaml.load("? [one, two]\n: value", Loader=CONTRACTS.UniqueKeyLoader)  # nosec B506 - BaseLoader subclass, no object construction
@@ -130,6 +168,44 @@ class WorkflowYAMLTests(unittest.TestCase):
         CONTRACTS.validate_workflow_pins("release-pipeline.yml", workflow, None)
         workflow["jobs"]["build"]["uses"] = "./.github/workflows/build.yml"
         CONTRACTS.validate_workflow_pins("release-pipeline.yml", workflow, {})
+
+    def test_configured_fuzz_workflow_requires_exact_policy_pin(self):
+        action = "victron-venus/venus-os-ci-toolkit/.github/workflows/fuzz.yml"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / ".github/workflows"
+            folder.mkdir(parents=True)
+            (folder / "release-pipeline.yml").write_text(MARKER)
+            (root / ".github/action-pins.json").write_text("[]")
+            policy = root / ".release-policy.json"
+            policy.write_text(json.dumps({"fuzzing": {"toolkit_ref": SHA}}))
+            workflow = {"jobs": {"fuzz": {"uses": action + "@" + SHA, "with": {"toolkit-ref": SHA}}}}
+            CONTRACTS.validate_generator_pins(root, {"release-pipeline.yml": workflow})
+            for reference in (action + "@" + "b" * 40, action + "@main",
+                              "other/repo/.github/workflows/fuzz.yml@" + SHA):
+                workflow["jobs"]["fuzz"]["uses"] = reference
+                with self.subTest(reference=reference), self.assertRaises(ValueError):
+                    CONTRACTS.validate_generator_pins(root, {"release-pipeline.yml": workflow})
+            for reference in ("main", "a" * 39, "A" * 40, None, 42):
+                policy.write_text(json.dumps({"fuzzing": {"toolkit_ref": reference}}))
+                with self.subTest(policy_reference=reference), self.assertRaises(ValueError):
+                    CONTRACTS.generator_pins(root)
+
+    def test_consumer_fuzz_pins_agree_without_generator_manifest(self):
+        action = "victron-venus/venus-os-ci-toolkit/.github/workflows/fuzz.yml"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/release-pipeline.yml").write_text(MARKER)
+            (root / ".release-policy.json").write_text(json.dumps({"fuzzing": {"toolkit_ref": SHA}}))
+            for wrapper, runtime, accepted in ((SHA, SHA, True), ("b" * 40, SHA, False),
+                                               (SHA, "b" * 40, False), ("b" * 40, "b" * 40, False)):
+                workflow = {"jobs": {"fuzz": {"uses": action + "@" + wrapper, "with": {"toolkit-ref": runtime}}}}
+                if accepted:
+                    CONTRACTS.validate_generator_pins(root, {"release-pipeline.yml": workflow})
+                else:
+                    with self.subTest(wrapper=wrapper, runtime=runtime), self.assertRaises(ValueError):
+                        CONTRACTS.validate_generator_pins(root, {"release-pipeline.yml": workflow})
 
     def test_non_generated_workflows_require_sha_without_manifest_membership(self):
         with tempfile.TemporaryDirectory() as directory:
