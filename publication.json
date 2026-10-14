@@ -7,6 +7,7 @@
     ".github/release-tests/test_cli_version_paths.py",
     ".github/release-tests/test_consumer_versioning.py",
     ".github/release-tests/test_prepare_version.py",
+    ".github/release-tests/test_project_release_notes.py",
     ".github/release-tests/test_public_source_package.py",
     ".github/release-tests/test_release_client_consumer.py",
     ".github/release-tests/test_release_control.py",
