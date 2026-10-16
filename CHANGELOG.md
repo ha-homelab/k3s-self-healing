@@ -16,6 +16,12 @@ An existing candidate receipt requires operator inspection after an interrupted
 operation. Approval, backup, source-push and recovery gates remain in force.
 Installing this source update and any live Core upgrade remain separate actions.
 
+### Security
+
+New approval receipts are created with owner-only access outside the source
+checkout. Existing committed receipts need separate history cleanup; this update
+does not remove historical copies or rotate any credentials.
+
 ## [0.1.3] - 2026-10-14
 
 ### Changed
