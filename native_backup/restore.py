@@ -42,6 +42,8 @@ def extract(archive, destination):
     if destination.is_symlink() or (destination.exists() and any(destination.iterdir())):
         raise ValueError('Restore destination must be a new or empty directory')
     destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Existing empty directories can be shared; protect credentials before extraction.
+    destination.chmod(0o700)
     root = destination.resolve()
     meta = backup_metadata(archive)
     seen = set()

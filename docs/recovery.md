@@ -32,6 +32,8 @@ the Music Assistant data and backup PVCs on the chosen LAN node.
 Its worker requires `NODE_NAME`; the manifest supplies the actual scheduled node
 through the Kubernetes downward API so recovery metadata never invents a node.
 
+The native restore tool makes its destination owner-only (0700), including a pre-existing empty directory, before reading backup contents. Choose a private parent directory without untrusted concurrent writers.
+
 Recovery data contains HA authentication/pairing state, Kubernetes Secrets and
 k3s server credentials. Restrict and protect the NAS, and keep recovery sets,
 restore reports and approval receipts private. The source publication tooling
