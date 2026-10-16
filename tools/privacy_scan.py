@@ -22,6 +22,9 @@ def findings(name, text):
     for rule, pattern in PATTERNS.items():
         for match in pattern.finditer(text):
             value = match.group()
+            if (rule == 'email' and name in {'SECURITY.md', 'CODE_OF_CONDUCT.md'}
+                    and value == 'alvit.work' + '@gmail.com'):
+                continue  # Explicitly published maintainer contact, only in policy files.
             if rule == 'email' and (value == 'git@github.com' or value.endswith(
                     ('@example.com', '@example.invalid', '@example.test', '@users.noreply.github.com'))):
                 continue

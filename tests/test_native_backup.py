@@ -6,12 +6,14 @@ import io
 import json
 import lzma
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 import tarfile
 import tempfile
 import sys
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'native_backup'))
@@ -66,6 +68,21 @@ class NativeRestoreTest(unittest.TestCase):
         self.assertFalse(report['homeassistant_started'])
         self.assertFalse(report['database_imported'])
         self.assertTrue((self.root / 'config/.storage/auth').is_file())
+
+    def test_existing_shared_directory_is_private_before_reading_the_backup(self):
+        destination = self.root / 'precreated'
+        destination.mkdir()
+        destination.chmod(0o777)
+        original = restore.backup_metadata
+
+        def verify_private(archive):
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o700)
+            return original(archive)
+
+        with patch.object(restore, 'backup_metadata', side_effect=verify_private):
+            restore.extract(self.archive(), destination)
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o700)
+        self.assertTrue((destination / '.storage/auth').is_file())
 
     def test_isolated_copied_restore_bundle_extracts_xz_native_archive(self):
         bundle = self.root / 'bundle';bundle.mkdir()
