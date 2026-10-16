@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import stat
 import time
 from urllib.request import urlopen
 
@@ -63,6 +65,7 @@ class Source:
     def __init__(self, settings):
         self.settings = settings
         self.path = Path("/state/repository")
+        self.approval_path = Path("/state/approvals")
         self.env = dict(os.environ, GIT_TERMINAL_PROMPT="0",
             GIT_SSH_COMMAND="ssh -i /credentials/ssh-privatekey -o IdentitiesOnly=yes -o UserKnownHostsFile=/credentials/known_hosts -o StrictHostKeyChecking=yes",
             GIT_AUTHOR_NAME="Home Assistant updater", GIT_COMMITTER_NAME="Home Assistant updater",
@@ -107,15 +110,48 @@ class Source:
         backup = pin_backup_manifest(backup_path.read_text(), image)
         if not re.fullmatch(r"[a-f0-9]{32}", approval["candidate_id"]):
             raise ValueError("Invalid approval identifier")
+        self._record_approval(approval)
         path.write_text(values)
         backup_path.write_text(backup)
-        ledger = self.path / "core_updates/approvals" / (approval["candidate_id"] + ".json")
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_text(json.dumps({k: approval[k] for k in (
-            "candidate_id", "target_version", "image", "base_image", "approved_at", "backup_id")}, indent=2) + "\n")
-        self.git("add", "helm/values-pajikos.yaml", "native_backup/cronjob.yaml", str(ledger.relative_to(self.path)))
+        self.git("add", "helm/values-pajikos.yaml", "native_backup/cronjob.yaml")
         self.git("commit", "-m", "Approve Home Assistant " + approval["target_version"])
         return self.git("rev-parse", "HEAD")
+
+    def _record_approval(self, approval):
+        """Persist an immutable private receipt before any source-file mutation."""
+        payload = (json.dumps({k: approval[k] for k in (
+            "candidate_id", "target_version", "image", "base_image", "approved_at", "backup_id")}, indent=2) + "\n").encode()
+        directory = self.approval_path
+        if directory.resolve().is_relative_to(self.path.resolve()):
+            raise RuntimeError("Approval receipts must stay outside the source checkout")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        parent = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        temporary = ".receipt-" + secrets.token_hex(16)
+        created = False
+        try:
+            info = os.fstat(descriptor)
+            if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                raise RuntimeError("Approval receipt directory must be private and owned by the updater")
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=descriptor)
+            created = True
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            # Linking publishes the complete receipt without replacing an old one.
+            os.link(temporary, approval["candidate_id"] + ".json",
+                    src_dir_fd=descriptor, dst_dir_fd=descriptor, follow_symlinks=False)
+            os.fsync(descriptor)
+        finally:
+            if created:
+                os.unlink(temporary, dir_fd=descriptor)
+            os.close(descriptor)
 
     def push(self, commit):
         if self.git("rev-parse", "HEAD") != commit:
