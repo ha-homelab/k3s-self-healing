@@ -22,6 +22,11 @@ jobs:
     - name: Reproduce pinned HA source imports
       run: python tools/ha_sources.py check --upstream
     - run: python -m unittest discover -s tests
+    - name: Verify repeatable source archives
+      run: |
+        python tools/package_release.py "$RUNNER_TEMP/source-first.tar.gz"
+        python tools/package_release.py "$RUNNER_TEMP/source-second.tar.gz"
+        cmp "$RUNNER_TEMP/source-first.tar.gz" "$RUNNER_TEMP/source-second.tar.gz"
     - name: Render synthetic installation
       run: 'mkdir -p "$RUNNER_TEMP/public-render"
 

@@ -2,9 +2,16 @@
 
 The source is a networked Home Assistant/k3s maintenance and recovery system. Its complete deployment includes privileged backup and update workers, the approval API, HA/MQTT, Kubernetes and external tools. An isolated archive helper is useful, but does not qualify the whole deployment's cryptographic configuration.
 
-On 2026-10-16, 324 source tests passed with one optional platform case skipped. Sixteen workflow-contract tests passed and Helm lint accepted the recovery chart. Real local HTTP tests cover successful requests and all five redirect statuses for both administrative urllib clients, verifying that no token reaches the redirect destination. A regression also requires an existing shared native-restore directory to become0700 before backup parsing. Archive and restore tests cover paths, links, truncation, SQLite consistency, changed source trees, private modes and interrupted operations. These are synthetic tests, not deployment or physical recovery acceptance.
+On 2026-10-16, the source suite ran 324 tests: 323 passed and one optional platform case was skipped. Sixteen workflow-contract tests passed and Helm lint accepted the recovery chart. Real local HTTP tests cover successful requests and all five redirect statuses for both administrative urllib clients, verifying that no token reaches the redirect destination. A regression also requires an existing shared native-restore directory to become 0700 before backup parsing. Archive and restore tests cover paths, links, truncation, SQLite consistency, changed source trees, private modes and interrupted operations. These are synthetic tests, not deployment or physical recovery acceptance.
 
 CodeQL Python/Actions analysis is part of the required quality gate. The existing source inventory, privacy scan, syntax checks, HA source-import verification, release contracts and pinned HA runtime tests remain enabled. All maintained source is in scan scope; an intentional test fixture needs a narrow documented disposition rather than an excluded production path. A raw Ruff security inventory is supplementary review input, not a claim that every generic warning has been eliminated.
+
+The required source validator also runs pinned Ruff 0.16.5 diagnostics
+`E9,F63,F7,F82` over every Python file in the publication inventory. These detect
+syntax/basic control-flow errors and undefined names. Only the exact Home
+Assistant `python_script` entry point receives its three documented injected
+names (`data`, `hass`, `output`); other unknown names still fail. Full formatting
+and every optional security/style rule are not asserted to pass.
 
 The local Python environment audit on 2026-10-16 found no published vulnerabilities in the 11 installed validation/runtime-client packages. This does not audit every package in the pinned Home Assistant container, Helm/kubectl, SSH/MySQL/NAS dependencies or an operator's deployment. Full runtime dependency and TLS key-policy qualification remains incomplete, so no whole-project Passing vulnerability or crypto guarantee is inferred from that small clean inventory.
 

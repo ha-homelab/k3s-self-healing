@@ -9,15 +9,16 @@ installation, operator backup, private profile or restored system is published.
 
 ## Version ownership and frozen inputs
 
-`SOURCE_VERSION` identifies the portable source collection. Base `0.1.2` follows
-the published `0.1.1` stable source release. The Helm chart version, upstream Home
+`SOURCE_VERSION` identifies the portable source collection; its current base is
+`0.1.4`. The Helm chart version, upstream Home
 Assistant versions and imported-source lock remain independently owned and are
 not rewritten. The policy checks the source version and its actual archived
 copy, not merely the asset filename.
 
 The explicit promotion profile is `promote-bytes`: beta 7 uses tag
-`v0.1.2-beta.7` and embedded suite version `0.1.2-beta.7`; RC 7 uses tag
-`v0.1.2-rc.7` and embedded version `0.1.2`. This allows a later approved stable
+`v0.1.4-beta.7` and embedded suite version `0.1.4-beta.7`; RC 7 uses tag
+`v0.1.4-rc.7` and embedded version `0.1.4`. These are format examples, not claims
+that those candidate tags have been published. This allows a later approved stable
 promotion to retain exact RC bytes. The full tag, source SHA, manifest and
 checksums remain essential because the numeric version does not identify the
 individual RC. This onboarding does not publish a stable release.
@@ -62,7 +63,7 @@ installed, run the actual base and channel from that plan:
 
 ```sh
 python3 scripts/version_plan.py sync --plan .release-plan.json
-python3 scripts/package_candidate.py 0.1.2 rc
+python3 scripts/package_candidate.py 0.1.4 rc
 python3 scripts/verify_source.py release-dist/*.tar.gz
 python3 scripts/stage_release_assets.py --target package --pattern 'release-dist/*'
 ```
