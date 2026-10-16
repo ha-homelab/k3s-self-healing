@@ -4,7 +4,7 @@ Use GitHub issues for reproducible bugs and concrete enhancement proposals, and 
 
 Contributions are accepted under the project's MIT license, preserving notices for imported upstream material. Follow the Code of Conduct. Discuss changes to backup format, update approval semantics or privileged deployment access before implementation.
 
-Use Python 3.14 and the pinned validation requirements. Run `python tools/validate.py`, `python -m unittest discover -s tests`, and the relevant Helm/Kustomize checks described in README.md. A change to the public file inventory must update publication.json deliberately. New functionality requires positive and negative tests; bug fixes require a regression test. Include archive traversal, symlink/race, authorization, interrupted-operation and credential-disclosure cases when affected. Runtime tests use synthetic Home Assistant state in a network-disabled container.
+Use Python 3.14 and the pinned validation requirements. Run `python tools/validate.py --lint`, `python -m unittest discover -s tests`, and the relevant Helm/Kustomize checks described in README.md. A change to the public file inventory must update publication.json deliberately. New functionality requires positive and negative tests; bug fixes require a regression test. Include archive traversal, symlink/race, authorization, interrupted-operation and credential-disclosure cases when affected. Runtime tests use synthetic Home Assistant state in a network-disabled container.
 
 For new and modified Python code, follow PEP 8: four-space indentation,
 `snake_case` functions/variables, `CapWords` classes and `UPPER_CASE` constants.

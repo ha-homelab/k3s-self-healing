@@ -18,7 +18,7 @@ jobs:
       with:
         python-version: '3.14'
     - run: pip install -r requirements-validation.txt
-    - run: python tools/validate.py
+    - run: python tools/validate.py --lint
     - name: Reproduce pinned HA source imports
       run: python tools/ha_sources.py check --upstream
     - run: python -m unittest discover -s tests

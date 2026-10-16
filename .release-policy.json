@@ -11,7 +11,7 @@
   ],
   "artifact_pattern": "release-assets*",
   "local_checks": [
-    "python3 tools/validate.py",
+    "python3 tools/validate.py --lint",
     "python3 -m unittest discover -s tests"
   ],
   "single_entry_ci": true,
