@@ -1,5 +1,9 @@
 # Home Assistant on k3s: recovery and maintenance
 
+[**Visual guide: process, boundaries and evidence**](docs/process-and-evidence.md)
+
+![Process overview; detailed steps and verification limits are in the visual guide.](docs/diagrams/core-update-flow.svg)
+
 [![Fuzzing: RC only](https://img.shields.io/badge/fuzzing-RC_only-blue)](docs/fuzzing.md)
 
 Portable Home Assistant Container deployment recipes, companion services,
@@ -78,8 +82,10 @@ the documented HA backup destination, credentials, and sufficient temporary
 space. The base HA deployment can use its ordinary SQLite recorder.
 
 Do not install backup or update workers until their prerequisites are satisfied.
-The updater writes image pins and approval receipts to the operator's selected
-deployment repository. Use a private deployment repository for those receipts.
+The updater commits only the two approved image-pin files to the operator's
+selected deployment repository. Approval receipts and the operation journal stay
+on its private state PVC; preserve them in private backups. See the
+[receipt boundary](docs/maintenance.md#private-approval-receipts).
 
 ## Source release
 
