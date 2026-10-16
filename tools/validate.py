@@ -23,7 +23,7 @@ def main():
     check_ha_sources(ROOT)
     python_files = [name for name in files if name.endswith('.py')]
     ha_script = 'homeassistant/python_scripts/notification_service_available.py'
-    lint = [sys.executable, '-m', 'ruff', 'check', '--isolated', '--select', 'E9,F63,F7,F82']
+    lint = [sys.executable, '-m', 'ruff', 'check', '--isolated', '--ignore-noqa', '--select', 'E9,F63,F7,F82']
     subprocess.run(lint + [name for name in python_files if name != ha_script], check=True, cwd=ROOT)
     # Home Assistant's python_script integration supplies these names; keep
     # undefined-name checking for every other identifier in this exact script.
