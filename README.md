@@ -109,3 +109,7 @@ source release boundaries and separate installation acceptance.
 Versioned beta/RC archives retain the exact public-source inventory and normalized
 archive layout. See [packaging and acceptance](docs/release-packaging.md) for
 frozen version plans, isolated source checks and separate installation acceptance.
+
+## Project maintenance
+
+See [contribution and testing policy](CONTRIBUTING.md), [conduct and confidential contact](CODE_OF_CONDUCT.md), [governance](GOVERNANCE.md), [roadmap](ROADMAP.md) and [security limits](SECURITY.md). OpenSSF Silver continuity is not established; full network-transport qualification remains incomplete.

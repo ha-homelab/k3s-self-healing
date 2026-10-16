@@ -6,7 +6,8 @@
   "default_branch": "main",
   "version_file": "SOURCE_VERSION",
   "validation_workflows": [
-    "validate.yml"
+    "validate.yml",
+    "codeql.yml"
   ],
   "artifact_pattern": "release-assets*",
   "local_checks": [

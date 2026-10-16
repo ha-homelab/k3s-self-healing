@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Reject redirects in administrative Kubernetes and Home Assistant HTTP clients before a token can reach a different endpoint; close private error responses promptly. No CVE is assigned.
+- Add whole-source Python/Actions CodeQL analysis and document the unqualified network-transport boundary honestly. Enable private vulnerability reporting and publish contribution, conduct and continuity policies.
+
 ## [0.1.4]
 
 ### Fixed

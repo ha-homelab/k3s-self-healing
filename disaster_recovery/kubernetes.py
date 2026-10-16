@@ -10,7 +10,24 @@ import ssl
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, quote
-from urllib.request import Request, urlopen
+from urllib.request import (HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener)
+
+
+class NoRedirect(HTTPRedirectHandler):
+    """Never forward administrative credentials to a redirect target."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+def urlopen(request, *, context=None, timeout=30):
+    """Open the selected endpoint directly, retaining normal TLS verification."""
+    opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), NoRedirect())
+    try:
+        return opener.open(request, timeout=timeout)
+    except HTTPError as error:
+        error.close()  # Only status/headers are used; do not retain private error bodies.
+        raise
 
 
 class Kubernetes:

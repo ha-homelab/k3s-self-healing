@@ -18,3 +18,15 @@ credentials. NetworkPolicies require enforcement by the cluster's network stack.
 Keep production credentials in local files and Kubernetes Secrets. The profile
 renderer contains installation identifiers but does not accept inline credentials.
 No source scanner can make a real HA backup suitable for public distribution.
+
+## Supported scope and response
+
+Current main and the latest stable source release receive security fixes. Older installations should upgrade or assess the relevant patch. On 2026-10-16 private GitHub vulnerability reporting was enabled and independently read back. You may also send a confidential report to alvit.work@gmail.com.
+
+We aim to acknowledge a report within seven days, investigate promptly and prioritize critical issues immediately. Coordinate a fix and disclosure date with the reporter; credit the reporter unless anonymity is requested. Release notes identify assigned vulnerability IDs and affected versions. No vulnerability reports were received outside GitHub in the preceding twelve months as confirmed by the maintainer.
+
+The urllib administrative Kubernetes and Home Assistant HTTP clients do not follow redirects or inherit proxy configuration. A selected endpoint must answer directly; a redirect fails before credentials can be sent to a new origin. This does not make an HTTP endpoint encrypted.
+
+## Current deployment limits
+
+The default private-cluster recipes include HTTP Home Assistant and approval APIs and MQTT without TLS. Kubernetes uses its service-account CA, but the full collection of Python, Helm, kubectl, registry, MySQL and NAS transports has not been qualified against the OpenSSF key-length policy. Do not expose these administrative services to an untrusted network or claim that a private address itself encrypts traffic. A complete secure deployment profile remains work in progress; an offline archive/restore test is not a substitute for that assessment.

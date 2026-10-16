@@ -24,3 +24,10 @@ class PrivacyTests(unittest.TestCase):
     def test_documentation_address_allowed_private_endpoint_rejected(self):
         self.assertFalse(findings('fixture', 'http://192.0.2.10:8123'))
         self.assertTrue(findings('fixture', 'http://' + '.'.join(['192', '168', '77', '42'])))
+
+    def test_public_policy_contact_is_allowed_only_in_policy_files(self):
+        contact = 'alvit.work' + '@gmail.com'
+        for name in ('SECURITY.md', 'CODE_OF_CONDUCT.md'):
+            self.assertFalse(findings(name, contact))
+        self.assertTrue(findings('runtime.json', contact))
+        self.assertTrue(findings('SECURITY.md', 'someone' + '@gmail.com'))
