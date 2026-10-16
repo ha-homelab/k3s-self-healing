@@ -6,6 +6,17 @@ Contributions are accepted under the project's MIT license, preserving notices f
 
 Use Python 3.14 and the pinned validation requirements. Run `python tools/validate.py`, `python -m unittest discover -s tests`, and the relevant Helm/Kustomize checks described in README.md. A change to the public file inventory must update publication.json deliberately. New functionality requires positive and negative tests; bug fixes require a regression test. Include archive traversal, symlink/race, authorization, interrupted-operation and credential-disclosure cases when affected. Runtime tests use synthetic Home Assistant state in a network-disabled container.
 
+For new and modified Python code, follow PEP 8: four-space indentation,
+`snake_case` functions/variables, `CapWords` classes and `UPPER_CASE` constants.
+Keep imports grouped at the top and public functions documented; split complex
+branches into named helpers. Preserve the surrounding style for unrelated lines.
+Use specific exceptions and explain broad boundary catches. Validate external
+input before side effects, bound network reads and timeouts, and pass subprocess
+arguments as lists without shell interpolation. YAML and shell changes should
+follow their file's existing indentation and quote substituted values. Reviews
+check these conventions; the current automated checks do not enforce every
+style rule across the repository.
+
 All maintained source remains in static-analysis scope. CodeQL examines Python and workflow code. Fix applicable security findings; any false-positive or intentional fixture exception needs a specific explanation. Do not silence broad warning classes or remove checks to obtain a green badge.
 
 Use a normal pull request with independent review, successful required CI and resolved discussions. Source acceptance does not authorize cluster changes. Deployment, restore, credential changes, an infrastructure apply and release promotion require the documented operator acceptance process. Record security fixes and relevant CVE/GHSA/Go advisory identifiers in CHANGELOG.md and release notes.

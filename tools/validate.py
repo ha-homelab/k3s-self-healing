@@ -4,6 +4,7 @@ import ast
 import json
 from pathlib import Path
 import subprocess
+import sys
 import yaml
 from privacy_scan import scan
 from ha_sources import check as check_ha_sources
@@ -20,6 +21,13 @@ def main():
     if failures:
         raise SystemExit(json.dumps(failures, indent=2))
     check_ha_sources(ROOT)
+    python_files = [name for name in files if name.endswith('.py')]
+    ha_script = 'homeassistant/python_scripts/notification_service_available.py'
+    lint = [sys.executable, '-m', 'ruff', 'check', '--isolated', '--select', 'E9,F63,F7,F82']
+    subprocess.run(lint + [name for name in python_files if name != ha_script], check=True, cwd=ROOT)
+    # Home Assistant's python_script integration supplies these names; keep
+    # undefined-name checking for every other identifier in this exact script.
+    subprocess.run(lint + ['--config', 'builtins = ["data", "hass", "output"]', ha_script], check=True, cwd=ROOT)
     for name in files:
         path = ROOT / name
         if path.suffix == '.py':

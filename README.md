@@ -1,6 +1,7 @@
 # Home Assistant on k3s: recovery and maintenance
 
 [![Fuzzing: RC only](https://img.shields.io/badge/fuzzing-RC_only-blue)](docs/fuzzing.md)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15588/badge)](https://www.bestpractices.dev/projects/15588)
 
 Portable Home Assistant Container deployment recipes, companion services,
 approval-gated Core updates, verified backups, and recovery tools.
