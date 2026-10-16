@@ -1,5 +1,9 @@
 # Bounded backup contract fuzzing
 
+See the [illustrated RC fuzzing process and verified rollout results](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/rc-fuzzing-results.md)
+for the shared release flow, evidence requirements and a dated cross-project
+snapshot. The project-specific scope and reproduction guidance below still apply.
+
 The targets exercise the repository-owned pure functions `validate_metadata`,
 `known_dump` and `validate_snapshot`. They never import a Home Assistant runtime,
 read an installed source tree, open a backup archive, connect to Kubernetes or
