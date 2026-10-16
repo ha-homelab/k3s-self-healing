@@ -36,7 +36,7 @@ here and are not included in that upstream import.
 python tools/ha_sources.py check             # offline output integrity
 python tools/ha_sources.py check --upstream  # fetch and reproduce the pinned source
 python tools/ha_sources.py refresh --revision FULL_REVIEWED_COMMIT_SHA
-python tools/validate.py
+python tools/validate.py --lint
 python -m unittest discover -s tests
 ```
 
@@ -74,3 +74,8 @@ private identifier denylist and source-to-public revision mapping outside this
 repository. A published credential must be revoked, not just deleted in a later
 commit. Review old public history separately when removing previously published
 personal data.
+
+The source CI and local review command include `--lint`, which requires the pinned
+Ruff dependency. Archive packaging independently repeats inventory, syntax,
+import-integrity and privacy checks; it does not require a linter in the minimal
+release-contract environment. Required source CI still rejects every diagnostic.

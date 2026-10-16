@@ -40,7 +40,7 @@ cd k3s-self-healing
 python3.14 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements-validation.txt
-python tools/validate.py
+python tools/validate.py --lint
 python -m unittest discover -s tests
 helm lint helm/native-recovery
 ```
