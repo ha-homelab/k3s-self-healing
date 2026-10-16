@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -345,6 +347,8 @@ class SourcePinTests(unittest.TestCase):
         (self.path / 'native_backup/cronjob.yaml').write_text(self.backup)
         self.source = worker.Source({})
         self.source.path = self.path
+        self.source.approval_path = self.path.parent / (self.path.name + '-receipts')
+        self.addCleanup(shutil.rmtree, self.source.approval_path, True)
         self.source.git = Mock(return_value=COMMIT)
         self.approval = {'candidate_id': RUN_ID, 'target_version': '2026.10.0',
                          'image': TARGET, 'base_image': BASE, 'approved_at': 'approved',
@@ -365,6 +369,63 @@ class SourcePinTests(unittest.TestCase):
         self.assertIn('# Official MySQL', actual_text)
         self.assertIn('&security', actual_text)
         self.assertFalse(any(call.args[0] == 'push' for call in self.source.git.call_args_list))
+        self.source.git.assert_any_call('add', 'helm/values-pajikos.yaml', 'native_backup/cronjob.yaml')
+        receipt = self.source.approval_path / (RUN_ID + '.json')
+        self.assertEqual(json.loads(receipt.read_text()), self.approval)
+        self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.source.approval_path.stat().st_mode & 0o777, 0o700)
+        self.assertFalse((self.path / 'core_updates/approvals').exists())
+
+    def test_existing_receipt_is_not_replaced_or_committed(self):
+        self.source.pin(TARGET, self.approval)
+        receipt = self.source.approval_path / (RUN_ID + '.json')
+        original = receipt.read_bytes()
+        self.source.git.reset_mock()
+        with self.assertRaises(FileExistsError):
+            self.source.pin(TARGET, {**self.approval, 'backup_id': 'different-private-id'})
+        self.assertEqual(receipt.read_bytes(), original)
+        self.assertEqual(list(self.source.approval_path.iterdir()), [receipt])
+        self.source.git.assert_not_called()
+
+    def test_real_git_commit_contains_only_image_pin_files(self):
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=self.path,
+                                           env=self.source.env, text=True).strip()
+        git('init', '--quiet')
+        git('config', 'commit.gpgsign', 'false')
+        git('config', 'core.hooksPath', '/dev/null')
+        git('add', 'helm/values-pajikos.yaml', 'native_backup/cronjob.yaml')
+        git('commit', '--quiet', '-m', 'Synthetic baseline')
+        self.source.git = git
+        commit = self.source.pin(TARGET, self.approval)
+        self.assertEqual(set(git('diff-tree', '--no-commit-id', '--name-only', '-r', commit).splitlines()),
+                         {'helm/values-pajikos.yaml', 'native_backup/cronjob.yaml'})
+        self.assertEqual(git('status', '--porcelain'), '')
+        self.assertNotIn('approvals/', git('ls-tree', '-r', '--name-only', commit))
+        self.assertEqual(json.loads((self.source.approval_path / (RUN_ID + '.json')).read_text()),
+                         self.approval)
+
+    def test_public_or_checkout_receipt_directory_blocks_source_mutation(self):
+        self.source.approval_path.mkdir(mode=0o755)
+        self.source.approval_path.chmod(0o755)
+        for directory in (self.source.approval_path, self.path / 'receipts'):
+            with self.subTest(directory=directory):
+                self.source.approval_path = directory
+                with self.assertRaises(RuntimeError):
+                    self.source.pin(TARGET, self.approval)
+                self.assertEqual((self.path / 'helm/values-pajikos.yaml').read_text(), self.values)
+                self.assertEqual((self.path / 'native_backup/cronjob.yaml').read_text(), self.backup)
+                self.source.git.assert_not_called()
+
+    def test_symlinked_receipt_directory_is_rejected(self):
+        target = self.path / 'private-target'
+        target.mkdir(mode=0o700)
+        self.source.approval_path.symlink_to(target, target_is_directory=True)
+        self.addCleanup(self.source.approval_path.unlink, missing_ok=True)
+        with self.assertRaises((RuntimeError, OSError)):
+            self.source.pin(TARGET, self.approval)
+        self.assertEqual(list(target.iterdir()), [])
+        self.source.git.assert_not_called()
 
     def test_ambiguous_backup_container_refuses_all_source_edits(self):
         broken = self.backup.replace('name: prepare', 'name: unexpected')

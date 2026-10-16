@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.4]
+
+### Fixed
+
+- Keep Core update approval receipts, including backup identifiers and approval
+  times, on the updater's private state volume instead of committing them to Git.
+- Require private receipt permissions and publish complete receipts without
+  replacing existing records before changing the two approved image-pin files.
+
+### Upgrade
+
+Back up the updater state volume and preserve older receipts in private storage.
+An existing candidate receipt requires operator inspection after an interrupted
+operation. Approval, backup, source-push and recovery gates remain in force.
+Installing this source update and any live Core upgrade remain separate actions.
+
 ## [0.1.3] - 2026-10-14
 
 ### Changed

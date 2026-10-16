@@ -70,3 +70,21 @@ operation. The durable journal distinguishes an ambiguous result from a proven
 failure. Do not clear it merely to force a retry. After a database migration,
 restore from the verified matching backup rather than downgrade the image over
 the migrated database.
+
+### Private approval receipts
+
+Before changing either source manifest, the updater saves the six-field approval
+receipt under `/state/approvals/<candidate-id>.json` on its existing state PVC.
+This contains the backup identifier and approval time. The directory is private
+(`0700`), files are `0600`, and a complete receipt is published without replacing
+an existing candidate record. An inaccessible or non-private directory stops the
+operation before source files change. A pre-existing receipt requires operator
+inspection; it is not silently reused or overwritten.
+
+Git commits contain only the approved Helm and native-backup image pins. Keep
+`/state/approvals` and the durable updater state in private backups. Receipts
+document approval and backup selection, not successful deployment; use the
+durable operation state to resolve an interrupted commit, push, or Helm operation.
+When upgrading an older deployment, preserve its previous Git-based receipts in
+private operator storage. This change does not remove historical Git objects or
+alter a running deployment until its updater code is explicitly installed.
