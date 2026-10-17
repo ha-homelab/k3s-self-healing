@@ -1,25 +1,19 @@
 # Changelog
 
-## Unreleased
+## [0.1.5] - 2026-10-17
 
-- Create the temporary MySQL client credential file exclusively with mode 0600
-  and remove it when the dump pipeline finishes or fails. The handoff remains
-  inside the private memory-backed work volume.
-- Block redirects before native-backup WebSocket authentication, completing the administrative WebSocket redirect policy.
-- Align maintained Home Assistant images and runtime CI on 2026.10.2, including update/recovery workers that still pinned 2026.9.1.
-- Select salted PBKDF2-HMAC-SHA512 with 220,000 iterations explicitly for newly generated Mosquitto password files.
+### Changed
+
+- Refresh maintained Home Assistant runtime references to 2026.10.2 and explicitly select PBKDF2-HMAC-SHA512 for new Mosquitto password files.
+- Add whole-source security analysis and improve reproducible source-package diagnostics and documentation.
+
+### Upgrade
+
+Review deployment-specific configuration before manually adopting the source package. Configure final administrative endpoints directly because redirects are now rejected. Preserve private backup credentials and the previously accepted source package for rollback. Publishing this archive does not apply Kubernetes manifests or alter running services.
 
 ### Security
 
-- Reject all redirects while opening administrative Home Assistant and Kubernetes
-  WebSockets. Previously, a redirected HA WebSocket could receive the configured
-  access token; a Kubernetes redirect could also change the checkpoint endpoint.
-  Configure the final endpoint directly. No CVE has been assigned.
-
-- Make an existing empty native-restore directory private before opening a backup, preventing restored credentials from becoming visible through inherited shared-directory permissions.
-
-- Reject redirects in administrative Kubernetes and Home Assistant HTTP clients before a token can reach a different endpoint; close private error responses promptly. No CVE is assigned.
-- Add whole-source Python/Actions CodeQL analysis and document the unqualified network-transport boundary honestly. Enable private vulnerability reporting and publish contribution, conduct and continuity policies.
+Administrative Home Assistant and Kubernetes HTTP/WebSocket clients reject redirects before forwarding credentials. Native-backup credential files are created exclusively with mode 0600 and removed after dump completion or failure. Existing empty restore directories become private before backup extraction. These changes include source and synthetic validation, not a claim of production deployment verification.
 
 ## [0.1.4]
 
