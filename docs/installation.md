@@ -50,10 +50,11 @@ kubectl --context YOUR_CONTEXT apply --dry-run=server -f local/companions.yaml
 kubectl --context YOUR_CONTEXT apply -f local/companions.yaml
 ```
 
-For an existing password file, omit `-c` and run the same hashing options for
-each user to reset its password without overwriting the other users. Existing
-hashes are not upgraded automatically. Keep the file readable by the broker
-through its Secret mount.
+For an existing legacy or weaker password record, omit `-c` and run the same
+hashing options for that user to reset its password without overwriting the
+other users. Preserve an existing stronger verifier, such as a suitably tuned
+Argon2id record. Existing hashes are not upgraded automatically. Keep the file
+readable by the broker through its Secret mount.
 
 This broker has no device bridges or external listener. In HA, configure MQTT
 with `mosquitto.homeassistant.svc.cluster.local`, port 1883, and your credentials.

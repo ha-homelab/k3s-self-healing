@@ -38,8 +38,9 @@ remain enabled.
 
 The documented inbound password verifiers are Home Assistant's salted bcrypt
 (cost 12) and Mosquitto's salted PBKDF2-HMAC-SHA512 (explicitly selected at
-220,000 iterations in the installation guide). Reset pre-existing Mosquitto
-credentials with that guide to upgrade their stored work factor. Outbound
+220,000 iterations in the installation guide). Reset legacy or weaker Mosquitto
+credentials with that guide to upgrade their stored work factor; preserve an
+existing stronger verifier instead of downgrading it. Outbound
 service passwords and bearer tokens are separate credentials, kept in Secrets;
 they are not compared against user-password hashes by this project.
 
