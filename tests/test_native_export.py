@@ -27,6 +27,8 @@ class ExportPipelineTest(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
         (self.work / 'database').write_text('fixture')
         (self.work / 'limit-blocks').write_text('1024')
+        self.credentials = self.work / 'client.cnf'
+        self.credentials.write_text('[client]\npassword="synthetic-test-only"\n')
         self.previous = self.config / 'recorder_backup/recorder.sql.gz'
         self.previous.write_bytes(b'previous verified export')
         self.pending = self.config / 'backups/recorder-export-staging/recorder.sql.xz.pending'
@@ -43,6 +45,7 @@ class ExportPipelineTest(unittest.TestCase):
         result = subprocess.run(['bash', '-ec', self.command], env=self.environment,
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(self.previous.read_bytes(), b'previous verified export')
+        self.assertFalse(self.credentials.exists(), 'All pipeline exits must remove the credential handoff')
         return result
 
     def test_success_keeps_valid_pending_dump_for_publication(self):

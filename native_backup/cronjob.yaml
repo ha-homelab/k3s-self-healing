@@ -63,6 +63,9 @@ spec:
                   # the next weekly run; the verified export is a separate file.
                   cleanup_failed_export() {
                     status=$?
+                    # The credential handoff is needed only by mysqldump, not
+                    # the later native backup or retained Job diagnostics.
+                    rm -f -- /work/client.cnf
                     if [ "$status" -ne 0 ]; then
                       rm -f -- "$pending"
                       if [ "$status" -eq 153 ]; then
