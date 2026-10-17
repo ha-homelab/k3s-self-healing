@@ -113,8 +113,8 @@ and PyPI publication use verified stable assets as a separate explicit operation
 
 ## Project limits and rollout requirements
 
-- The original deterministic source archive and companion SHA-256 file are retained. Publication inventory, privacy checks, imported HA source integrity and all existing source/runtime checks remain required.
-- SOURCE_VERSION identifies the portable source collection; independently versioned Helm chart, upstream HA releases and imported-source locks are preserved.
+- The original deterministic source archive and companion SHA-256 file are retained. Publication inventory, privacy checks and source/runtime checks remain required for all checked-in source, including the locally maintained HA packages and tests.
+- SOURCE_VERSION identifies the portable source collection; independently versioned Helm chart and upstream HA releases are preserved.
 - Only a verified frozen SOURCE_VERSION overlay may differ from the committed snapshot. Ordinary local packaging still requires an entirely clean commit. No restore, cluster mutation, deployment or physical acceptance is performed.
 
 For public repositories, merge and verify the workflows before enabling the

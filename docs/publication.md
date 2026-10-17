@@ -10,51 +10,36 @@ storage, databases, backups, deployment receipts and operational logs.
 
 This repository was initialized independently from selected reviewed files.
 Private Git histories, branches, tags, PR discussions and runtime state are not
-part of this repository. Contributions to code owned here belong in this
-repository; imported HA files follow the ownership rules below. Do not merge a
-private predecessor's Git history or mirror-push it.
+part of this repository. Contributions to its reusable implementation belong
+here. Do not merge a private predecessor's Git history or mirror-push it.
 
 ## Shared source ownership
 
 This repository owns the portable update controller, backup/recovery tools,
-deployment recipes and optional-notification helper. Operators consume an exact
-reviewed revision and keep installation configuration in a private repository.
-Changing an operator's configuration must not create a separate editable copy
-of the shared implementation.
+deployment recipes, HA packages, motion-light blueprint and runtime tests.
+Maintain reusable logic directly in these checked-in files, including the Core
+approval and HACS maintenance packages and their tests. Source validation and
+packaging use this repository alone; there is no external HA configuration
+checkout, source-regeneration step or source-import lock.
 
-The Core approval package, HACS maintenance package, motion-light blueprint and
-their two imported runtime test files are generated from
-[ha-homelab/home-assistant](https://github.com/ha-homelab/home-assistant).
-`ha-sources.lock.json` records the exact source commit, five allowed source paths,
-source SHA-256 hashes, transformation versions and resulting file hashes. Those
-five checked-in files are a reproducible distribution snapshot, not separate
-implementation owners. Edit their logic upstream, then explicitly update this
-pin. The portable optional-notification package, helper and tests are maintained
-here and are not included in that upstream import.
+Operators consume an exact reviewed revision and keep installation configuration
+in a private repository. Use private overlays for addresses, credentials,
+notification recipients and installation-specific schedules. Propose reusable
+behavior changes here with synthetic regression tests.
 
 ```sh
-python tools/ha_sources.py check             # offline output integrity
-python tools/ha_sources.py check --upstream  # fetch and reproduce the pinned source
-python tools/ha_sources.py refresh --revision FULL_REVIEWED_COMMIT_SHA
 python tools/validate.py --lint
 python -m unittest discover -s tests
 ```
 
-The importer fetches only the five allowed raw HTTPS paths at a full commit SHA.
-It refuses redirects, bounds each response and keeps upstream source bytes only
-in memory. Deterministic transformations replace site-specific notification
-recipients and the approval endpoint with secrets, remove site-specific header
-comments, and adapt test fixtures and paths. They fail if the expected source
-structure changes. Every generated output passes the privacy scanner before
-any files are written. Review the diff and run the pinned HA runtime tests before
-committing an updated lock. Never copy the full upstream configuration into this
-repository or a source archive.
+Review the diff and run the pinned HA runtime tests when changing a package or
+its runtime tests. Keep approval endpoints and notification recipients behind
+the existing secrets and private configuration boundaries. Never copy a live HA
+configuration into this repository or a source archive.
 
-Ordinary validation rejects direct changes to generated files. CI also downloads
-the exact source revision and regenerates all five files, so changing an output
-hash alone cannot hide a divergent implementation. Dependency updates are
-explicit reviewed changes; neither a moved tag nor a new upstream commit
-silently changes an existing release.
+Home Assistant container images, Python dependencies and the Helm chart remain
+explicitly versioned dependencies. Their updates require separate review and
+tests; editing a local HA package does not update those runtime dependencies.
 
 `publication.json` explicitly lists every approved source file. `tools/validate.py`
 rejects inventory drift, symlinks, unreviewed binaries and common identifiers.
@@ -76,6 +61,6 @@ commit. Review old public history separately when removing previously published
 personal data.
 
 The source CI and local review command include `--lint`, which requires the pinned
-Ruff dependency. Archive packaging independently repeats inventory, syntax,
-import-integrity and privacy checks; it does not require a linter in the minimal
+Ruff dependency. Archive packaging independently repeats inventory, syntax
+and privacy checks; it does not require a linter in the minimal
 release-contract environment. Required source CI still rejects every diagnostic.

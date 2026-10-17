@@ -11,6 +11,10 @@ installation's addresses, storage locations, notification recipients, credential
 device identifiers, and recovery archives belong in its private configuration.
 GitHub authorship and device model names are intentionally public.
 
+The reusable HA packages, blueprint and runtime tests are maintained directly
+in this repository. Edit and review them here; validation and source packaging
+use the checked-in files without fetching a separate configuration repository.
+
 ## What is included
 
 - A pinned Home Assistant Helm configuration and authenticated Mosquitto recipe.

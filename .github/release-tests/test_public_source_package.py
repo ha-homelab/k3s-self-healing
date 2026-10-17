@@ -2,12 +2,15 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -77,6 +80,55 @@ class PublicSourcePackageTests(unittest.TestCase):
         (self.root / "README.md").write_text("unreviewed change\n")
         with self.assertRaisesRegex(ValueError, "Commit reviewed source"):
             package_release.require_source(self.root)
+
+    def test_local_ha_source_edits_package_and_verify_without_network(self):
+        maintained_files = (
+            "homeassistant/packages/core_updates.yaml",
+            "homeassistant/packages/hacs_maintenance.yaml",
+            "homeassistant/blueprints/motion_light_off.yaml",
+            "runtime_tests/test_core_updates.py",
+            "runtime_tests/test_hacs_maintenance.py",
+        )
+        edited = {}
+        for name in maintained_files:
+            path = self.root / name
+            edited[name] = path.read_bytes() + b"\n# Reviewed local source edit.\n"
+            path.write_bytes(edited[name])
+        self.command("git", "add", *maintained_files)
+        self.command(
+            "git", "-c", "user.name=Source fixture",
+            "-c", "user.email=source@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm",
+            "Maintain the reusable HA source locally",
+        )
+
+        # Child Python validators inherit this guard, including archive replay.
+        with tempfile.TemporaryDirectory(prefix="source-network-guard-") as guard:
+            Path(guard, "sitecustomize.py").write_text(
+                "import socket\n"
+                "def reject_network(*args, **kwargs):\n"
+                "    raise AssertionError('Source acceptance attempted network access')\n"
+                "socket.socket.connect = reject_network\n"
+                "socket.socket.connect_ex = reject_network\n"
+                "socket.create_connection = reject_network\n"
+                "socket.getaddrinfo = reject_network\n"
+            )
+            with patch.dict(os.environ, {"PYTHONPATH": guard}):
+                self.command(
+                    sys.executable, "-c",
+                    "import socket; assert socket.socket.connect.__name__ == 'reject_network'",
+                )
+                archive = package_release.build(
+                    self.root, self.root / "build/locally-maintained.tar.gz"
+                )
+                verify_source.verify(archive, self.root)
+
+        with tarfile.open(archive) as package:
+            for name, expected in edited.items():
+                with self.subTest(path=name):
+                    stream = package.extractfile("k3s-self-healing/" + name)
+                    self.assertIsNotNone(stream)
+                    self.assertEqual(stream.read(), expected)
 
     def test_real_beta_and_rc_archives_have_verifiable_receipts(self):
         for channel in ("beta", "rc"):
