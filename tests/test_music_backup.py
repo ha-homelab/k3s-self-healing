@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -33,7 +34,7 @@ class MusicBackupTests(unittest.TestCase):
             source.mkdir()
             (source / 'settings.json').write_text('{"server_id":"fixture"}')
             (source / 'musicassistant.log').write_text('volatile log')
-            with sqlite3.connect(source / 'library.db') as database:
+            with closing(sqlite3.connect(source / 'library.db')) as database, database:
                 database.execute('PRAGMA journal_mode=WAL')
                 database.execute('CREATE TABLE tracks (name TEXT)')
                 database.execute("INSERT INTO tracks VALUES ('music')")
@@ -45,7 +46,7 @@ class MusicBackupTests(unittest.TestCase):
                 self.assertEqual(manifest['components'][0]['source']['node'], 'fixture-music-node')
                 target = base / 'restore'
                 verify_snapshot(snapshot, extract_to=target)
-                with sqlite3.connect(target / 'music-assistant/library.db') as restored:
+                with closing(sqlite3.connect(target / 'music-assistant/library.db')) as restored:
                     self.assertEqual(restored.execute('SELECT name FROM tracks').fetchall(), [('music',)])
                 self.assertFalse((target / 'music-assistant/musicassistant.log').exists())
                 with patch.object(music, 'archive_component', side_effect=RuntimeError('fixture')):
