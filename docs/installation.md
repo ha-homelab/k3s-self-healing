@@ -33,11 +33,15 @@ local output. It does not connect to a cluster or apply resources.
 
 ## Mosquitto
 
-Generate a password file with `mosquitto_passwd`; let it prompt for the password.
+Generate a password file with Mosquitto 2.1.2 `mosquitto_passwd`; let it prompt for the password.
+Select PBKDF2-HMAC-SHA512 explicitly with 220,000 iterations, as in the
+[OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2).
+This avoids depending on the hashing default of a different installed tool version.
 Do not use a command-line password, commit the file, or publish its hash.
 
 ```sh
-mosquitto_passwd -c local/mosquitto-password.txt homeassistant
+umask 077
+mosquitto_passwd -H sha512-pbkdf2 -I 220000 -c local/mosquitto-password.txt homeassistant
 kubectl --context YOUR_CONTEXT create namespace homeassistant
 kubectl --context YOUR_CONTEXT -n homeassistant create secret generic mosquitto-passwd \
   --from-file=password.txt=local/mosquitto-password.txt
@@ -45,6 +49,12 @@ python tools/render.py --profile local/site.json companions > local/companions.y
 kubectl --context YOUR_CONTEXT apply --dry-run=server -f local/companions.yaml
 kubectl --context YOUR_CONTEXT apply -f local/companions.yaml
 ```
+
+For an existing legacy or weaker password record, omit `-c` and run the same
+hashing options for that user to reset its password without overwriting the
+other users. Preserve an existing stronger verifier, such as a suitably tuned
+Argon2id record. Existing hashes are not upgraded automatically. Keep the file
+readable by the broker through its Secret mount.
 
 This broker has no device bridges or external listener. In HA, configure MQTT
 with `mosquitto.homeassistant.svc.cluster.local`, port 1883, and your credentials.

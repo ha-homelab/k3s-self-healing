@@ -66,6 +66,18 @@ def option(value):
     return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '"'
 
 
+def write_client_options(settings):
+    """Hand credentials to mysqldump in the private, memory-backed work volume."""
+    path = WORK / 'client.cnf'
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write('[client]\n' + ''.join(k + '=' + option(v) + '\n' for k, v in settings.items()))
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
 GIB = 1024**3
 LEGACY_SQL_CEILING = 3 * GIB
 EXPANDED_SQL_CEILING = 5 * GIB
@@ -224,7 +236,6 @@ def prepare():
     (WORK / 'limit-blocks').write_text(str(limit // 1024))
     settings = {'host': parsed.host, 'port': parsed.port or 3306,
                 'user': parsed.username, 'password': parsed.password}
-    (WORK / 'client.cnf').write_text('[client]\n' + ''.join(k + '=' + option(v) + '\n' for k, v in settings.items()))
     (WORK / 'database').write_text(parsed.database)
     engine = sqlalchemy.create_engine(url)
     with engine.connect() as connection:
@@ -240,6 +251,7 @@ def prepare():
         'tables': tables, 'method': 'mysqldump --single-transaction --quick --hex-blob',
         'schema_included': True, 'users_and_grants_included': False})
     shutil.copyfile(WORK / 'manifest.json', STAGE / 'manifest.json')
+    write_client_options(settings)
     print('Prepared recorder export; credentials remain in the private temporary volume.', flush=True)
 
 
@@ -302,6 +314,11 @@ def update_receipt_context():
     return context
 
 
+async def reject_websocket_redirect(_session, _context, params):
+    params.response.close()
+    raise RuntimeError('Administrative WebSocket redirects are not allowed')
+
+
 async def native_backup():
     import aiohttp
     update_context = update_receipt_context()
@@ -310,7 +327,10 @@ async def native_backup():
     measured = await asyncio.to_thread(measure_config)
     token = Path(os.environ['HA_TOKEN_FILE']).read_text().strip()
     url = os.environ['HA_URL'].rstrip('/')
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+    trace = aiohttp.TraceConfig()
+    trace.on_request_redirect.append(reject_websocket_redirect)
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60),
+                                     trace_configs=[trace], trust_env=False) as session:
         async with session.ws_connect(url.replace('http', 'ws', 1) + '/api/websocket') as socket:
             await socket.receive_json(timeout=API_TIMEOUT_SECONDS)
             await socket.send_json({'type': 'auth', 'access_token': token})

@@ -160,6 +160,8 @@ class ReadRetryTests(unittest.TestCase):
         errors += [HTTPError(self.client.base, code, "offline HTTP fixture", {}, None)
                    for code in (401, 403, 500)]
         for error in errors:
+            if isinstance(error, HTTPError):
+                self.addCleanup(error.close)
             with self.subTest(error=type(error).__name__):
                 with patch.object(kubernetes, "urlopen", side_effect=error) as opened, patch.object(
                     kubernetes.time, "sleep"

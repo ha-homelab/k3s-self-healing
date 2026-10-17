@@ -27,7 +27,7 @@ We aim to acknowledge a report within seven days, investigate promptly and prior
 
 The urllib administrative Kubernetes and Home Assistant HTTP clients do not follow redirects or inherit proxy configuration. A selected endpoint must answer directly; a redirect fails before credentials can be sent to a new origin. This does not make an HTTP endpoint encrypted.
 
-The Home Assistant and Kubernetes WebSocket clients also reject redirects before
+The Home Assistant updater, native-backup and Kubernetes WebSocket clients also reject redirects before
 contacting the target. In particular, a redirected WebSocket must not receive the
 Home Assistant authentication message or a Kubernetes checkpoint command.
 Configure the final service URL directly; redirects are rejected even within the
@@ -35,5 +35,23 @@ same origin. Normal certificate verification and the overall operation timeout
 remain enabled.
 
 ## Current deployment limits
+
+The documented inbound password verifiers are Home Assistant's salted bcrypt
+(cost 12) and Mosquitto's salted PBKDF2-HMAC-SHA512 (explicitly selected at
+220,000 iterations in the installation guide). Reset legacy or weaker Mosquitto
+credentials with that guide to upgrade their stored work factor; preserve an
+existing stronger verifier instead of downgrading it. Outbound
+service passwords and bearer tokens are separate credentials, kept in Secrets;
+they are not compared against user-password hashes by this project.
+
+The native MySQL export has one temporary plaintext credential handoff because
+`mysqldump` must read its outbound database password. `prepare` creates
+`/work/client.cnf` exclusively with mode 0600 inside a mode-0700 directory on the
+memory-backed `work` emptyDir. It is not on the HA PVC, in the SQL archive, in an
+environment variable, or in a command-line password argument. The dump shell
+removes it on normal completion and handled failures; forced termination can
+leave the memory-only file until the Pod is removed. Do not replace that volume
+with persistent storage. The existing source credential remains in HA's private
+configuration and requires the same host/cluster access protection.
 
 The default private-cluster recipes include HTTP Home Assistant and approval APIs and MQTT without TLS. Kubernetes uses its service-account CA, but the full collection of Python, Helm, kubectl, registry, MySQL and NAS transports has not been qualified against the OpenSSF key-length policy. Do not expose these administrative services to an untrusted network or claim that a private address itself encrypts traffic. A complete secure deployment profile remains work in progress; an offline archive/restore test is not a substitute for that assessment.

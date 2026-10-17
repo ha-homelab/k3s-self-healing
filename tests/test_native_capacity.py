@@ -22,6 +22,34 @@ runner = importlib.util.module_from_spec(spec);spec.loader.exec_module(runner)
 GIB = 1024**3
 
 
+class ClientOptionsTest(unittest.TestCase):
+    def test_private_creation_even_with_permissive_umask(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(runner, 'WORK', Path(directory)):
+            previous = os.umask(0)
+            try:
+                runner.write_client_options({'password': 'synthetic-test-only'})
+            finally:
+                os.umask(previous)
+            path = Path(directory) / 'client.cnf'
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.read_text(), '[client]\npassword="synthetic-test-only"\n')
+
+    def test_existing_file_and_symlink_are_not_overwritten(self):
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink), tempfile.TemporaryDirectory() as directory, patch.object(runner, 'WORK', Path(directory)):
+                target = Path(directory) / 'existing'
+                target.write_text('do not overwrite')
+                path = Path(directory) / 'client.cnf'
+                if symlink:
+                    path.symlink_to(target)
+                else:
+                    path.write_text('existing credentials')
+                with self.assertRaises(FileExistsError):
+                    runner.write_client_options({'password': 'synthetic-test-only'})
+                self.assertEqual(target.read_text(), 'do not overwrite')
+                self.assertEqual(path.read_text(), 'do not overwrite' if symlink else 'existing credentials')
+
+
 class CapacityTest(unittest.TestCase):
     def test_maximum_keeps_reserve_in_both_phases(self):
         for total in (24 * GIB, 45 * GIB, runner.EXPANDED_FILESYSTEM_MIN, 200 * GIB):
@@ -280,7 +308,7 @@ class ApiCapacityTest(unittest.IsolatedAsyncioTestCase):
                 async def __aenter__(self):return self
                 async def __aexit__(self, *args):pass
                 def ws_connect(self, _):return Socket()
-            aiohttp = types.SimpleNamespace(ClientSession=Session, ClientTimeout=lambda **kw: None)
+            aiohttp = types.SimpleNamespace(TraceConfig=lambda: types.SimpleNamespace(on_request_redirect=[]), ClientSession=Session, ClientTimeout=lambda **kw: None)
             with patch.dict('sys.modules', {'aiohttp': aiohttp}), patch.dict(os.environ, {'HA_TOKEN_FILE': str(token), 'HA_URL': 'http://offline.invalid'}), patch.object(runner.asyncio, 'to_thread', new=AsyncMock(side_effect=measure)), patch.object(runner, 'check_native_capacity', side_effect=RuntimeError('Insufficient free space')), patch.object(runner, 'verify_runtime_contract', return_value={'homeassistant_version': '2026.9.1'}):
                 with self.assertRaisesRegex(RuntimeError, 'free space'):await runner.native_backup()
             self.assertNotIn('backup/generate_with_automatic_settings', calls)

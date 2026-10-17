@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Create the temporary MySQL client credential file exclusively with mode 0600
+  and remove it when the dump pipeline finishes or fails. The handoff remains
+  inside the private memory-backed work volume.
+- Block redirects before native-backup WebSocket authentication, completing the administrative WebSocket redirect policy.
+- Align maintained Home Assistant images and runtime CI on 2026.10.2, including update/recovery workers that still pinned 2026.9.1.
+- Select salted PBKDF2-HMAC-SHA512 with 220,000 iterations explicitly for newly generated Mosquitto password files.
+
 ### Security
 
 - Reject all redirects while opening administrative Home Assistant and Kubernetes
