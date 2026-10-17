@@ -302,6 +302,11 @@ def update_receipt_context():
     return context
 
 
+async def reject_websocket_redirect(_session, _context, params):
+    params.response.close()
+    raise RuntimeError('Administrative WebSocket redirects are not allowed')
+
+
 async def native_backup():
     import aiohttp
     update_context = update_receipt_context()
@@ -310,7 +315,10 @@ async def native_backup():
     measured = await asyncio.to_thread(measure_config)
     token = Path(os.environ['HA_TOKEN_FILE']).read_text().strip()
     url = os.environ['HA_URL'].rstrip('/')
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+    trace = aiohttp.TraceConfig()
+    trace.on_request_redirect.append(reject_websocket_redirect)
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60),
+                                     trace_configs=[trace], trust_env=False) as session:
         async with session.ws_connect(url.replace('http', 'ws', 1) + '/api/websocket') as socket:
             await socket.receive_json(timeout=API_TIMEOUT_SECONDS)
             await socket.send_json({'type': 'auth', 'access_token': token})

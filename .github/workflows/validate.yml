@@ -53,7 +53,13 @@ jobs:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       with:
         persist-credentials: false
+    - name: Verify native backup compatibility in the pinned runtime
+      run: |
+        docker run --rm --network none --read-only --tmpfs /tmp:rw,size=64m \
+          -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/work:ro" -w /work --entrypoint python \
+          ghcr.io/home-assistant/home-assistant:2026.10.2@sha256:33afb0659d786213264c2211f8d91c5fe87461c56eba6a3a546eb05fc71e89f4 \
+          native_backup/contract.py --expect-version 2026.10.2
     - name: Run package scenarios in the pinned Home Assistant runtime
       run: "docker run --rm --network none --read-only --tmpfs /tmp:rw,size=512m \\\n  -e PYTHONDONTWRITEBYTECODE=1 -e REQUIRE_HA_RUNTIME=1\
-        \ -v \"$PWD:/work:ro\" -w /work --entrypoint python \\\n  ghcr.io/home-assistant/home-assistant:2026.10.0@sha256:1b64d38f38d922bf9d59336451fd6453e1d614f934456af4ee3d2a51061be3a4\
+        \ -v \"$PWD:/work:ro\" -w /work --entrypoint python \\\n  ghcr.io/home-assistant/home-assistant:2026.10.2@sha256:33afb0659d786213264c2211f8d91c5fe87461c56eba6a3a546eb05fc71e89f4\
         \ \\\n  -m unittest discover -s runtime_tests -v\n"

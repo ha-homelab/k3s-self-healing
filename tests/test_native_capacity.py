@@ -280,7 +280,7 @@ class ApiCapacityTest(unittest.IsolatedAsyncioTestCase):
                 async def __aenter__(self):return self
                 async def __aexit__(self, *args):pass
                 def ws_connect(self, _):return Socket()
-            aiohttp = types.SimpleNamespace(ClientSession=Session, ClientTimeout=lambda **kw: None)
+            aiohttp = types.SimpleNamespace(TraceConfig=lambda: types.SimpleNamespace(on_request_redirect=[]), ClientSession=Session, ClientTimeout=lambda **kw: None)
             with patch.dict('sys.modules', {'aiohttp': aiohttp}), patch.dict(os.environ, {'HA_TOKEN_FILE': str(token), 'HA_URL': 'http://offline.invalid'}), patch.object(runner.asyncio, 'to_thread', new=AsyncMock(side_effect=measure)), patch.object(runner, 'check_native_capacity', side_effect=RuntimeError('Insufficient free space')), patch.object(runner, 'verify_runtime_contract', return_value={'homeassistant_version': '2026.9.1'}):
                 with self.assertRaisesRegex(RuntimeError, 'free space'):await runner.native_backup()
             self.assertNotIn('backup/generate_with_automatic_settings', calls)

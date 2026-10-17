@@ -71,7 +71,7 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *args):pass
             def ws_connect(self, _):return Socket()
 
-        aiohttp = types.SimpleNamespace(ClientSession=Session, ClientTimeout=lambda **kwargs: None)
+        aiohttp = types.SimpleNamespace(TraceConfig=lambda: types.SimpleNamespace(on_request_redirect=[]), ClientSession=Session, ClientTimeout=lambda **kwargs: None)
         limits = {'POLL_INTERVAL_SECONDS': 0.001, **settings}
         with patch.dict(sys.modules, {'aiohttp': aiohttp}), patch.dict(os.environ, {
                 'HA_TOKEN_FILE': str(self.token), 'HA_URL': 'http://offline.invalid'}), patch.multiple(
