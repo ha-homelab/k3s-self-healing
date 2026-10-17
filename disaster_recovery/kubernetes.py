@@ -20,6 +20,12 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+async def reject_websocket_redirect(_session, _context, params):
+    """Stop the upgrade before contacting a redirected administrative endpoint."""
+    params.response.close()
+    raise RuntimeError('Administrative WebSocket redirects are not allowed')
+
+
 def urlopen(request, *, context=None, timeout=30):
     """Open the selected endpoint directly, retaining normal TLS verification."""
     opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), NoRedirect())
@@ -79,6 +85,8 @@ class Kubernetes:
     async def _exec(self, namespace, pod, container, command):
         # aiohttp ships with the pinned Home Assistant runtime image.
         import aiohttp
+        trace = aiohttp.TraceConfig()
+        trace.on_request_redirect.append(reject_websocket_redirect)
         query = [('container', container), ('stdout', 'true'), ('stderr', 'true')]
         query += [('command', value) for value in command]
         path = '/api/v1/namespaces/' + quote(namespace, safe='') + '/pods/' + quote(pod, safe='') + '/exec?'
@@ -88,7 +96,8 @@ class Kubernetes:
         # ClientTimeout bounds the HTTP handshake, but an upgraded WebSocket can
         # otherwise receive forever. Bound the complete command, including EOF.
         async with asyncio.timeout(30):
-            async with aiohttp.ClientSession(headers=self.headers(), timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with aiohttp.ClientSession(headers=self.headers(), timeout=aiohttp.ClientTimeout(total=30),
+                                             trace_configs=[trace], trust_env=False) as session:
                 async with session.ws_connect(url, ssl=self.context, protocols=['v4.channel.k8s.io']) as socket:
                     async for message in socket:
                         if message.type == aiohttp.WSMsgType.BINARY and message.data:

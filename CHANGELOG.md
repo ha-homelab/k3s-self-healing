@@ -4,6 +4,11 @@
 
 ### Security
 
+- Reject all redirects while opening administrative Home Assistant and Kubernetes
+  WebSockets. Previously, a redirected HA WebSocket could receive the configured
+  access token; a Kubernetes redirect could also change the checkpoint endpoint.
+  Configure the final endpoint directly. No CVE has been assigned.
+
 - Make an existing empty native-restore directory private before opening a backup, preventing restored credentials from becoming visible through inherited shared-directory permissions.
 
 - Reject redirects in administrative Kubernetes and Home Assistant HTTP clients before a token can reach a different endpoint; close private error responses promptly. No CVE is assigned.

@@ -170,6 +170,7 @@
     "tests/test_restore.py",
     "tests/test_runner.py",
     "tests/test_smartthings_time_guard.py",
+    "tests/test_websocket_redirects.py",
     "tools/ha_sources.py",
     "tools/package_release.py",
     "tools/privacy_scan.py",
