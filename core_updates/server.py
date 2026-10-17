@@ -16,6 +16,8 @@ from model import ACTIVE, Store, public_state
 from runtime import Runtime, image_for, release
 from worker import run
 
+TASKS = web.AppKey('tasks', set)
+
 
 class Publisher:
     def __init__(self, store, settings):
@@ -69,7 +71,7 @@ def create_app(store, runtime, settings, token, worker=run):
     if len(token) < 32:
         raise ValueError("A strong approval token is required")
     app = web.Application(client_max_size=2048)
-    app["tasks"] = set()
+    app[TASKS] = set()
 
     def authorized(request):
         return hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + token)
@@ -93,8 +95,8 @@ def create_app(store, runtime, settings, token, worker=run):
         except RuntimeError:
             return web.json_response({"error": "Approval expired, changed or already used"}, status=409)
         task = asyncio.create_task(asyncio.to_thread(worker, store, runtime, settings))
-        app["tasks"].add(task)
-        task.add_done_callback(app["tasks"].discard)
+        app[TASKS].add(task)
+        task.add_done_callback(app[TASKS].discard)
         return web.json_response({"accepted": True, "candidate_id": accepted["candidate_id"],
                                   "target_version": accepted["target_version"]}, status=202)
 
