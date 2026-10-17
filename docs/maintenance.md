@@ -1,5 +1,7 @@
 # Maintenance
 
+For the illustrated workflow and evidence limits, see the [visual guide](process-and-evidence.md).
+
 ## HA packages
 
 Copy the selected files from `homeassistant/packages/` into your HA packages
