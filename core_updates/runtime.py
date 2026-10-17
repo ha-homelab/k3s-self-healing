@@ -25,6 +25,12 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+async def reject_websocket_redirect(_session, _context, params):
+    """Stop the upgrade before contacting a redirected administrative endpoint."""
+    params.response.close()
+    raise RuntimeError("Administrative WebSocket redirects are not allowed")
+
+
 def urlopen(request, *, context=None, timeout=30):
     """Open the selected endpoint directly, retaining normal TLS verification."""
     opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), NoRedirect())
@@ -182,8 +188,10 @@ class Runtime:
 
     async def _ha_entries(self):
         import aiohttp
+        trace = aiohttp.TraceConfig()
+        trace.on_request_redirect.append(reject_websocket_redirect)
         async with asyncio.timeout(30):
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trace_configs=[trace], trust_env=False) as session:
                 async with session.ws_connect(self.ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket") as ws:
                     await ws.receive_json()
                     await ws.send_json({"type": "auth", "access_token": self.ha_token})

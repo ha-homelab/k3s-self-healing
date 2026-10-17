@@ -70,6 +70,7 @@ class CheckpointTests(unittest.IsolatedAsyncioTestCase):
         fake_aiohttp = SimpleNamespace(
             ClientSession=lambda **_: session,
             ClientTimeout=lambda **values: values,
+            TraceConfig=lambda: SimpleNamespace(on_request_redirect=[]),
             WSMsgType=SimpleNamespace(BINARY=2, ERROR=258),
         )
         real_timeout = asyncio.timeout

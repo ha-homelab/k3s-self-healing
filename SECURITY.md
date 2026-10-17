@@ -27,6 +27,13 @@ We aim to acknowledge a report within seven days, investigate promptly and prior
 
 The urllib administrative Kubernetes and Home Assistant HTTP clients do not follow redirects or inherit proxy configuration. A selected endpoint must answer directly; a redirect fails before credentials can be sent to a new origin. This does not make an HTTP endpoint encrypted.
 
+The Home Assistant and Kubernetes WebSocket clients also reject redirects before
+contacting the target. In particular, a redirected WebSocket must not receive the
+Home Assistant authentication message or a Kubernetes checkpoint command.
+Configure the final service URL directly; redirects are rejected even within the
+same origin. Normal certificate verification and the overall operation timeout
+remain enabled.
+
 ## Current deployment limits
 
 The default private-cluster recipes include HTTP Home Assistant and approval APIs and MQTT without TLS. Kubernetes uses its service-account CA, but the full collection of Python, Helm, kubectl, registry, MySQL and NAS transports has not been qualified against the OpenSSF key-length policy. Do not expose these administrative services to an untrusted network or claim that a private address itself encrypts traffic. A complete secure deployment profile remains work in progress; an offline archive/restore test is not a substitute for that assessment.
