@@ -15,7 +15,7 @@ class PrivacyTests(unittest.TestCase):
             self.assertNotIn(value, str(result))
 
     def test_device_model_and_github_authorship_are_allowed(self):
-        self.assertEqual(findings('fixture', 'iPhone Air; @4alvit; git@github.com:ha-homelab/k3s-self-healing.git'), [])
+        self.assertEqual(findings('fixture', 'Example Phone; @example-contributor; git@github.com:example/project.git'), [])
 
     def test_reserved_email_domain_does_not_allow_other_domains(self):
         self.assertFalse(findings('fixture', 'email@example.test'))

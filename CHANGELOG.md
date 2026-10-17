@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Maintain reusable HA packages, the motion-light blueprint and runtime tests
+  directly in this repository. Source validation and packaging no longer fetch
+  or regenerate them from an external configuration repository.
+
 ## [0.1.5] - 2026-10-17
 
 ### Changed

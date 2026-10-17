@@ -3,16 +3,16 @@
 The release remains the original deterministic public-source archive:
 `k3s-self-healing-v<package-version>.tar.gz` and its companion `.sha256` file.
 It contains exactly the paths in `publication.json`, under the existing
-`k3s-self-healing/` directory. The inventory, privacy scan and pinned Home
-Assistant source-import checks run before packaging. No Docker image, cluster
+`k3s-self-healing/` directory. The inventory, privacy scan and source syntax
+checks run before packaging. No Docker image, cluster
 installation, operator backup, private profile or restored system is published.
 
 ## Version ownership and frozen inputs
 
-`SOURCE_VERSION` identifies the portable source collection; its current base is
-`0.1.4`. The Helm chart version, upstream Home
-Assistant versions and imported-source lock remain independently owned and are
-not rewritten. The policy checks the source version and its actual archived
+`SOURCE_VERSION` identifies the portable source collection, including the HA
+packages and runtime tests maintained here. The Helm chart and upstream Home
+Assistant versions remain independent and are not rewritten by source-release
+versioning. The policy checks the source version and its actual archived
 copy, not merely the asset filename.
 
 The explicit promotion profile is `promote-bytes`: beta 7 uses tag
@@ -37,13 +37,13 @@ the checkout. Ignored plan and output files are never archive inputs.
 The adapter preserves normalized archive ownership, timestamps, file order and
 the existing path layout. It verifies the complete final archive against the
 approved source inventory and exact overlay bytes, then extracts it to a private
-temporary directory. From that extraction it runs the privacy scan, offline
-import-integrity check, render and restore help commands, actual native-backup
+temporary directory. From that extraction it runs the privacy scan,
+render and restore help commands, actual native-backup
 unit suite and committed fuzz corpus. Help commands do not restore, deploy,
 inspect an installed Home Assistant instance or contact an operator service.
 
-The original source and pinned Home Assistant runtime jobs remain required. They
-still reproduce allowed upstream HA imports, render synthetic manifests, scan
+The source and pinned Home Assistant runtime jobs remain required. They
+validate the checked-in files, render synthetic manifests, scan
 source/rendered files for secrets and run offline package scenarios in the
 pinned HA image. The Linux RC campaigns additionally exercise the two bounded
 pure targets documented in [fuzzing](fuzzing.md). Local unit/corpus replay alone

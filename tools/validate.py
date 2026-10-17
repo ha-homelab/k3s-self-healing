@@ -8,7 +8,6 @@ import subprocess
 import sys
 import yaml
 from privacy_scan import scan
-from ha_sources import check as check_ha_sources
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,7 +33,6 @@ def main():
     failures = scan(ROOT, files)
     if failures:
         raise SystemExit(json.dumps(failures, indent=2))
-    check_ha_sources(ROOT)
     if arguments.lint:
         check_python_diagnostics(files)
     for name in files:

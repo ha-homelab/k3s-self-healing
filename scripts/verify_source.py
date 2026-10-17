@@ -35,7 +35,6 @@ def verify(archive, root):
                 path.write_bytes(content)
         commands = [
             ["tools/privacy_scan.py"],
-            ["tools/ha_sources.py", "check"],
             ["tools/render.py", "--help"],
             ["native_backup/restore.py", "--help"],
             ["-m", "unittest", "discover", "-s", "tests", "-p", "test_native*.py"],
