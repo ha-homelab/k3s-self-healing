@@ -1,12 +1,22 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.6] - 2026-10-18
 
 ### Changed
 
 - Maintain reusable HA packages, the motion-light blueprint and runtime tests
   directly in this repository. Source validation and packaging no longer fetch
   or regenerate them from an external configuration repository.
+
+- Document configuration ownership, private approval receipts, and the source validation and release process.
+
+### Upgrade
+
+Review deployment-specific configuration before manually adopting the verified source archive. Preserve private state, approval receipts and the previously accepted source package for rollback. Publishing the archive does not apply Kubernetes manifests or alter running services.
+
+### Security
+
+Approval, backup, source-push and recovery gates remain in force. Private runtime evidence stays outside the source repository; documentation and synthetic checks do not qualify a live deployment.
 
 ## [0.1.5] - 2026-10-17
 
