@@ -15,6 +15,10 @@ def run(source=Path('/data'), root=Path('/backup/snapshots')):
     if len(node) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
                                   for label in node.split('.')):
         raise ValueError('NODE_NAME must identify the source Kubernetes node')
+    claim = os.environ.get('SOURCE_DATA_CLAIM', 'music-assistant-home-data')
+    if len(claim) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label)
+                                   for label in claim.split('.')):
+        raise ValueError('SOURCE_DATA_CLAIM must identify the mounted Kubernetes claim')
     os.umask(0o077)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (root / '.run.lock').open('a') as lock:
@@ -26,7 +30,7 @@ def run(source=Path('/data'), root=Path('/backup/snapshots')):
         try:
             component = archive_component(source, work, 'music-assistant',
                 {'type': 'local', 'node': node, 'namespace': 'homeassistant',
-                 'claim': 'music-assistant-home-data'},
+                 'claim': claim},
                 ['.cache', 'musicassistant.log', 'musicassistant.log.1'])
             write_json(work / 'manifest.json', {
                 'format_version': 1, 'profile': PROFILE, 'completed': True,
