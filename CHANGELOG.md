@@ -13,6 +13,12 @@ Set `SOURCE_DATA_CLAIM` to the PVC mounted at `/data` in the Music Assistant bac
 job. Existing jobs retain the `music-assistant-home-data` default. Publishing the
 source archive does not modify running jobs or migrate storage.
 
+### Security
+
+The claim selector accepts Kubernetes DNS names and affects snapshot attribution
+only. Preserve private snapshot permissions and verified restore procedures when
+adopting the release; this change grants no additional filesystem or cluster access.
+
 ## [0.1.6] - 2026-10-18
 
 ### Changed
