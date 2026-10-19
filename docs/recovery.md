@@ -31,6 +31,9 @@ requires `--apply`. Music Assistant backups are separately optional and require
 the Music Assistant data and backup PVCs on the chosen LAN node.
 Its worker requires `NODE_NAME`; the manifest supplies the actual scheduled node
 through the Kubernetes downward API so recovery metadata never invents a node.
+Set `SOURCE_DATA_CLAIM` to the claim mounted at `/data` when selecting a different
+Music Assistant data PVC. The worker validates and records this value in the
+snapshot manifest; it defaults to `music-assistant-home-data` for existing jobs.
 
 The native restore tool makes its destination owner-only (0700), including a pre-existing empty directory, before reading backup contents. Choose a private parent directory without untrusted concurrent writers.
 

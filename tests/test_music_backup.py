@@ -14,7 +14,8 @@ from disaster_recovery.restore import verify_snapshot
 
 class MusicBackupTests(unittest.TestCase):
     def setUp(self):
-        environment = patch.dict(os.environ, {'NODE_NAME': 'fixture-music-node'})
+        environment = patch.dict(os.environ, {'NODE_NAME': 'fixture-music-node',
+                                             'SOURCE_DATA_CLAIM': 'music-assistant-home-data'})
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -44,6 +45,7 @@ class MusicBackupTests(unittest.TestCase):
                 snapshot = backups / json.loads(success)['snapshot']
                 manifest = json.loads((snapshot / 'manifest.json').read_text())
                 self.assertEqual(manifest['components'][0]['source']['node'], 'fixture-music-node')
+                self.assertEqual(manifest['components'][0]['source']['claim'], 'music-assistant-home-data')
                 target = base / 'restore'
                 verify_snapshot(snapshot, extract_to=target)
                 with closing(sqlite3.connect(target / 'music-assistant/library.db')) as restored:
@@ -54,6 +56,36 @@ class MusicBackupTests(unittest.TestCase):
                         music.run(source, backups)
                 self.assertEqual((backups / 'latest-success.json').read_bytes(), success)
                 self.assertEqual(json.loads((backups / 'latest-attempt.json').read_text())['state'], 'failed')
+
+    def test_claim_identity_follows_the_selected_mounted_claim(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            source = base / 'data'
+            source.mkdir()
+            (source / 'settings.json').write_text('{}')
+            for claim in (None, 'fixture-music-data'):
+                backups = base / ('default' if claim is None else 'selected')
+                with patch.dict(os.environ):
+                    if claim is None:
+                        os.environ.pop('SOURCE_DATA_CLAIM', None)
+                    else:
+                        os.environ['SOURCE_DATA_CLAIM'] = claim
+                    music.run(source, backups)
+                success = json.loads((backups / 'latest-success.json').read_text())
+                snapshot = backups / success['snapshot']
+                manifest = json.loads((snapshot / 'manifest.json').read_text())
+                self.assertEqual(manifest['components'][0]['source']['claim'],
+                                 claim or 'music-assistant-home-data')
+                verify_snapshot(snapshot)
+
+    def test_invalid_claim_fails_before_any_backup_write(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'backups'
+            for claim in ('', '../claim', 'claim..local', 'Uppercase', 'x' * 254):
+                with self.subTest(claim=claim), patch.dict(os.environ, {'SOURCE_DATA_CLAIM': claim}):
+                    with self.assertRaisesRegex(ValueError, 'SOURCE_DATA_CLAIM'):
+                        music.run(Path(temporary), root)
+                    self.assertFalse(root.exists())
 
 
 if __name__ == '__main__':

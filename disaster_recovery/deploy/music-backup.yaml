@@ -51,6 +51,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: SOURCE_DATA_CLAIM
+              value: music-assistant-home-data
             resources:
               requests:
                 cpu: 25m
