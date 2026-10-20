@@ -163,6 +163,8 @@
     "tests/test_native_contract.py",
     "tests/test_native_export.py",
     "tests/test_native_format.py",
+    "tests/test_native_install.py",
+    "tests/test_native_paths.py",
     "tests/test_native_receipt.py",
     "tests/test_native_stream.py",
     "tests/test_prepare.py",

@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- Preserve the last verified recorder export when staging directories or
+  metadata are linked to another generation. Publish metadata with private,
+  exclusively created temporary files and atomic replacement.
+- Validate all native backup resources before creating the export directory or
+  applying changes. Refuse installation while an unfinished Job uses the shared
+  code, and recheck the HA Pod and Job state immediately before applying.
+- Select the HA container by its configuration mount, require the backup workers
+  to match its immutable image digest, and verify the installed native backup
+  contract before making changes.
 - Keep Core updater runtime endpoints aligned with the installer's selected
   namespace and HA/MQTT Services. Reject conflicting settings before applying
   manifests and remove unused endpoint environment variables.
@@ -12,12 +21,23 @@
 
 ### Upgrade
 
+Align both HA worker images in the installation's native backup template with
+the running, reviewed HA image before rerunning the installer. Schedule this
+operation outside backup runs and HA rollouts. Publication alone changes no
+running workload or recovery data.
+
 Re-run the Core updater installer with the existing private settings and service
 names. Omit `ha_url` and `mqtt_host` to derive them from the selected Services, or
 set them to the same in-cluster endpoints. The installer still defaults to a
 server-side dry run. Publishing this source does not change a running updater.
 
 ### Security
+
+Linked recorder staging or metadata now fails closed without rewriting the
+previous verified pair. Installation preflight does not make multi-resource
+application atomic; concurrent installers and backup starts remain unsupported.
+Backup authorization, retention, runtime source checks and capacity reserves are
+unchanged.
 
 The runtime settings and NetworkPolicy now describe the same administrative
 endpoints. Conflicting values fail before manifest application; no credential,

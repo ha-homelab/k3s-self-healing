@@ -500,6 +500,7 @@ class TemporaryStorageInstallerTest(unittest.TestCase):
                     {
                         "name": "ha",
                         "volumeMounts": [
+                            {"name": "config", "mountPath": "/config"},
                             {"name": "temporary", "mountPath": "/config/tmp_backups"}
                         ],
                     }
@@ -558,15 +559,17 @@ class TemporaryStorageInstallerTest(unittest.TestCase):
             if mutation == "create":
                 pod["spec"]["volumes"][0]["hostPath"]["type"] = "DirectoryOrCreate"
             if mutation == "subpath":
-                pod["spec"]["containers"][0]["volumeMounts"][0]["subPath"] = "x"
+                pod["spec"]["containers"][0]["volumeMounts"][1]["subPath"] = "x"
             if mutation == "readonly":
-                pod["spec"]["containers"][0]["volumeMounts"][0]["readOnly"] = True
+                pod["spec"]["containers"][0]["volumeMounts"][1]["readOnly"] = True
             with self.assertRaisesRegex(ValueError, "Directory hostPath"):
                 self.installer.temporary_host_path(pod, "example-node")
 
     def test_legacy_configuration_keeps_shared_filesystem_budget(self):
         pod = self.fixture()
-        pod["spec"]["containers"][0]["volumeMounts"] = []
+        pod["spec"]["containers"][0]["volumeMounts"] = [
+            {"name": "config", "mountPath": "/config"}
+        ]
         self.assertIsNone(self.installer.temporary_host_path(pod, "example-node"))
         with self.assertRaisesRegex(ValueError, "no dedicated"):
             self.installer.temporary_host_path(

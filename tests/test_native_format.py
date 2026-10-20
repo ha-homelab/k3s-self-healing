@@ -24,7 +24,7 @@ class FormatTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        for key, name in [('CONFIG', 'config'), ('OUTPUT', 'config/recorder_backup'), ('STAGE', 'stage'), ('WORK', 'work')]:
+        for key, name in [('CONFIG', 'config'), ('OUTPUT', 'config/recorder_backup'), ('STAGE', 'config/backups/recorder-export-staging'), ('WORK', 'work')]:
             path = self.root / name;path.mkdir(parents=True, exist_ok=True)
             p = patch.object(runner, key, path);p.start();self.addCleanup(p.stop)
         self.sql = b'INSERT INTO states VALUES (1);\n' * 1000
