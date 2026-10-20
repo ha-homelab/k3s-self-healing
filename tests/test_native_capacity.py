@@ -326,3 +326,249 @@ class ReaderPermissionsTest(unittest.TestCase):
             self.assertTrue(context['readOnlyRootFilesystem'])
             self.assertEqual(context['capabilities']['drop'], ['ALL'])
             self.assertEqual(context['capabilities'].get('add', []), [] if name == 'mysql-dump' else ['DAC_READ_SEARCH'])
+
+
+class SeparateFilesystemTest(unittest.TestCase):
+    def test_budget_accounts_for_each_device_without_double_charging_sql(self):
+        total = 54 * GIB
+        for root_free in (5 * GIB, 9 * GIB, 20 * GIB):
+            for archive_free in (4 * GIB, 7 * GIB, 20 * GIB):
+                for measured in (0, 640 * 1024**2, 2 * GIB):
+                    disk = shutil._ntuple_diskusage(
+                        32 * GIB, 32 * GIB - archive_free, archive_free
+                    )
+                    try:
+                        limit = runner.compressed_budget(
+                            root_free, 3 * GIB, total, measured, disk
+                        )
+                    except RuntimeError:
+                        continue
+                    self.assertLessEqual(limit, runner.reviewed_export_ceiling(total))
+                    self.assertGreaterEqual(
+                        root_free - limit, runner.reserve_bytes(total)
+                    )
+                    self.assertGreaterEqual(
+                        archive_free - limit - runner.archive_overhead(measured),
+                        runner.reserve_bytes(disk.total),
+                    )
+                    # Old-SQL reclaim never finances the new dump's peak.
+                    self.assertEqual(
+                        limit,
+                        runner.compressed_budget(root_free, 0, total, measured, disk),
+                    )
+
+    def test_full_external_filesystem_refuses_export_even_with_empty_root(self):
+        archive = shutil._ntuple_diskusage(32 * GIB, 30 * GIB, 2 * GIB)
+        with self.assertRaisesRegex(RuntimeError, "free space"):
+            runner.compressed_budget(40 * GIB, 5 * GIB, 54 * GIB, 0, archive)
+
+    def test_final_guard_uses_archive_room_and_retains_root_reserve(self):
+        sql = Mock()
+        sql.is_symlink.return_value = False
+        sql.is_file.return_value = True
+        sql.stat.return_value.st_size = 5 * GIB
+        root = shutil._ntuple_diskusage(54 * GIB, 50 * GIB, 4 * GIB)
+        archive = shutil._ntuple_diskusage(32 * GIB, 20 * GIB, 12 * GIB)
+        with (
+            patch.object(runner, "active_export", return_value=sql),
+            patch.object(
+                runner, "backup_filesystems", return_value=(root, archive, True)
+            ),
+        ):
+            report = runner.check_native_capacity(0)
+            self.assertEqual(report["free_bytes"], archive.free)
+            self.assertEqual(report["reviewed_ceiling_bytes"], 5 * GIB)
+        low_root = shutil._ntuple_diskusage(54 * GIB, 52 * GIB, 2 * GIB)
+        low_archive = shutil._ntuple_diskusage(32 * GIB, 25 * GIB, 7 * GIB)
+        for disks in ((low_root, archive, True), (root, low_archive, True)):
+            with (
+                patch.object(runner, "active_export", return_value=sql),
+                patch.object(runner, "backup_filesystems", return_value=disks),
+                patch.object(runner.os, "open", side_effect=PermissionError),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "verified SQL export retained"
+                ):
+                    runner.check_native_capacity(0)
+        sql.unlink.assert_not_called()
+
+    def test_external_probe_requires_mount_and_installed_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            config = root / "config"
+            config.mkdir()
+            archive = root / "archive"
+            archive.mkdir()
+            real_stat = Path.stat
+            config_disk = shutil._ntuple_diskusage(54 * GIB, 50 * GIB, 4 * GIB)
+            archive_disk = shutil._ntuple_diskusage(32 * GIB, 20 * GIB, 12 * GIB)
+
+            def stat(path, **kwargs):
+                values = list(real_stat(path, **kwargs))
+                values[2] = os.makedev(8, 4 if path == archive else 1)
+                return os.stat_result(values)
+
+            mountinfo = (
+                f"12 10 8:4 /ha-backup-tmp {archive} ro - ext4 /dev/example ro\n"
+            )
+            with (
+                patch.object(runner, "CONFIG", config),
+                patch.object(runner.Path, "stat", stat),
+                patch.object(
+                    runner.shutil,
+                    "disk_usage",
+                    side_effect=lambda p: config_disk if p == config else archive_disk,
+                ),
+                patch.dict(
+                    os.environ,
+                    {
+                        "HA_BACKUP_TEMP_DIR": str(archive),
+                        "HA_BACKUP_TEMP_DEVICE": "8:4",
+                    },
+                ),
+            ):
+                with patch.object(runner.Path, "read_text", return_value=mountinfo):
+                    self.assertEqual(
+                        runner.backup_filesystems(), (config_disk, archive_disk, True)
+                    )
+                    with patch.dict(os.environ, {"HA_BACKUP_TEMP_DEVICE": "8:5"}):
+                        with self.assertRaisesRegex(RuntimeError, "mount/device"):
+                            runner.backup_filesystems()
+                with patch.object(runner.Path, "read_text", return_value=""):
+                    with self.assertRaisesRegex(RuntimeError, "mount/device"):
+                        runner.backup_filesystems()
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "HA_BACKUP_TEMP_DIR": str(config),
+                            "HA_BACKUP_TEMP_DEVICE": "8:1",
+                        },
+                    ),
+                    patch.object(
+                        runner.Path,
+                        "read_text",
+                        return_value=f"12 10 8:1 / {config} ro - ext4 /dev/root ro\n",
+                    ),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "mount/device"):
+                        runner.backup_filesystems()
+            link = root / "link"
+            link.symlink_to(archive)
+            with (
+                patch.object(runner.shutil, "disk_usage", return_value=config_disk),
+                patch.dict(
+                    os.environ,
+                    {"HA_BACKUP_TEMP_DIR": str(link), "HA_BACKUP_TEMP_DEVICE": "8:4"},
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "real absolute directory"):
+                    runner.backup_filesystems()
+
+    def test_half_configured_external_probe_never_falls_back_to_root(self):
+        disk = shutil._ntuple_diskusage(54 * GIB, 34 * GIB, 20 * GIB)
+        with patch.object(runner.shutil, "disk_usage", return_value=disk):
+            for directory, device in (
+                ("/archive", ""),
+                ("", "8:4"),
+                ("/archive", "invalid"),
+            ):
+                with patch.dict(
+                    os.environ,
+                    {"HA_BACKUP_TEMP_DIR": directory, "HA_BACKUP_TEMP_DEVICE": device},
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "path and expected device"
+                    ):
+                        runner.backup_filesystems()
+
+
+class TemporaryStorageInstallerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "temporary_storage_installer", ROOT / "scripts/install-native-backup.py"
+        )
+        cls.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.installer)
+
+    def fixture(self):
+        return {
+            "spec": {
+                "nodeName": "example-node",
+                "containers": [
+                    {
+                        "name": "ha",
+                        "volumeMounts": [
+                            {"name": "temporary", "mountPath": "/config/tmp_backups"}
+                        ],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "temporary",
+                        "hostPath": {
+                            "path": "/example-data/ha-backup-tmp",
+                            "type": "Directory",
+                        },
+                    }
+                ],
+            }
+        }
+
+    def test_inherited_mount_is_read_only_and_not_added_to_mysql(self):
+        import yaml
+
+        pod = next(
+            yaml.safe_load_all((ROOT / "native_backup/cronjob.yaml").read_text())
+        )["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+        host_path = self.installer.temporary_host_path(self.fixture(), "example-node")
+        self.installer.configure_temporary_storage(pod, host_path, "8:4")
+        for container in pod["initContainers"] + pod["containers"]:
+            mounts = [
+                m for m in container["volumeMounts"] if m["name"] == "backup-temporary"
+            ]
+            if container["name"] == "mysql-dump":
+                self.assertEqual(mounts, [])
+            else:
+                self.assertEqual(
+                    mounts,
+                    [
+                        {
+                            "name": "backup-temporary",
+                            "mountPath": "/ha-backup-tmp",
+                            "readOnly": True,
+                        }
+                    ],
+                )
+                self.assertIn(
+                    {"name": "HA_BACKUP_TEMP_DEVICE", "value": "8:4"}, container["env"]
+                )
+        self.assertEqual(pod["volumes"][-1]["hostPath"]["type"], "Directory")
+
+    def test_wrong_node_and_unsafe_or_mismatched_mounts_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "node"):
+            self.installer.temporary_host_path(self.fixture(), "different-node")
+        with self.assertRaisesRegex(ValueError, "differs"):
+            self.installer.temporary_host_path(
+                self.fixture(), "example-node", "/different-directory"
+            )
+        for mutation in ("create", "subpath", "readonly"):
+            pod = self.fixture()
+            if mutation == "create":
+                pod["spec"]["volumes"][0]["hostPath"]["type"] = "DirectoryOrCreate"
+            if mutation == "subpath":
+                pod["spec"]["containers"][0]["volumeMounts"][0]["subPath"] = "x"
+            if mutation == "readonly":
+                pod["spec"]["containers"][0]["volumeMounts"][0]["readOnly"] = True
+            with self.assertRaisesRegex(ValueError, "Directory hostPath"):
+                self.installer.temporary_host_path(pod, "example-node")
+
+    def test_legacy_configuration_keeps_shared_filesystem_budget(self):
+        pod = self.fixture()
+        pod["spec"]["containers"][0]["volumeMounts"] = []
+        self.assertIsNone(self.installer.temporary_host_path(pod, "example-node"))
+        with self.assertRaisesRegex(ValueError, "no dedicated"):
+            self.installer.temporary_host_path(
+                pod, "example-node", "/example-data/ha-backup-tmp"
+            )

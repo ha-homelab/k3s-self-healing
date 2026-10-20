@@ -61,6 +61,38 @@ export directory and installs the weekly CronJob, not an immediate backup. The
 token file must be mode 0600 or 0400. Confirm the first backup and restore before
 enabling Core updates. The API token has the same sensitivity as HA login access.
 
+### Separate temporary archive filesystem
+
+When HA mounts `/config/tmp_backups` from a separate host filesystem, the
+installer discovers that existing `hostPath` and mounts the same directory
+read-only at `/ha-backup-tmp` in the prepare and native-backup containers. It
+requires `hostPath.type: Directory`, an exact mount without `subPath`, matching
+HA/Job nodes and the same configuration PVC. The optional
+`--backup-temp-host-path` argument asserts the expected host path; it never
+creates the directory or changes HA's mount.
+
+The installer reads the Linux device number from HA's actual mounted path and
+records it as `HA_BACKUP_TEMP_DEVICE`, alongside `HA_BACKUP_TEMP_DIR`. Every
+prepare and final capacity check requires that exact mounted device, distinct
+from the configuration filesystem. A missing mount, root-filesystem fallback,
+symlink or changed device fails closed. After intentionally changing the storage
+device, rerun the installer to validate it and refresh the expected number.
+
+For separate filesystems, the export budget is the smaller of configuration
+free space minus its reserve, archive free space minus its own reserve and
+measured archive overhead, and the existing reviewed SQL ceiling. The ceiling
+is still selected from configuration filesystem size. After publication, both
+reserves are checked again and the actual SQL size plus archive overhead must
+fit on the archive filesystem. The legacy single-filesystem calculation remains
+unchanged when HA has no separate mount. These are fresh measurements, not disk
+reservations; concurrent backups and unrelated large writes remain unsupported.
+
+If the configuration filesystem drops below its reserve after publication,
+the runner fails safely and retains the verified SQL export. Its numeric
+`config_capacity` record is currently available only in Job logs; the Core
+updater reports a generic Job failure for this case. Archive-filesystem capacity
+failures continue to use the existing structured updater diagnostic.
+
 ## Restore
 
 Use `python -m disaster_recovery.restore --help` for recovery-set verification and

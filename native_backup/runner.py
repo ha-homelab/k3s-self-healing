@@ -106,15 +106,45 @@ def reviewed_export_ceiling(total):
     return EXPANDED_SQL_CEILING if total >= EXPANDED_FILESYSTEM_MIN else LEGACY_SQL_CEILING
 
 
-def compressed_budget(free, reclaimable, total, measured):
-    """Reserve new SQL and the one streamed Core/Synology native archive."""
+def compressed_budget(free, reclaimable, total, measured, archive_disk=None):
+    """Bound both peaks, sharing space only when SQL and archive share a device."""
     reserve = reserve_bytes(total)
-    limit = min(free - reserve,
-                (free + reclaimable - reserve - archive_overhead(measured)) // 2,
-                reviewed_export_ceiling(total))
+    archive_limit = ((free + reclaimable - reserve - archive_overhead(measured)) // 2
+                     if archive_disk is None else
+                     archive_disk.free - reserve_bytes(archive_disk.total) - archive_overhead(measured))
+    limit = min(free - reserve, archive_limit, reviewed_export_ceiling(total))
     if limit < 1024:
         raise RuntimeError('Insufficient free space for export and native backup reserve')
     return limit // 1024 * 1024
+
+
+def backup_filesystems():
+    """Validate the optional external mount before trusting its available space.
+
+    The installer obtains the expected Linux device number from HA's actual
+    /config/tmp_backups mount on this same node. A missing mount, a replaced
+    backing device or an unmounted host filesystem must never fall back to root.
+    """
+    config_disk = shutil.disk_usage(CONFIG)
+    directory = os.environ.get('HA_BACKUP_TEMP_DIR')
+    expected_device = os.environ.get('HA_BACKUP_TEMP_DEVICE')
+    if not directory and not expected_device:
+        return config_disk, config_disk, False  # Legacy in-PVC temporary archives.
+    if not directory or not expected_device or not re.fullmatch(r'[0-9]+:[0-9]+', expected_device):
+        raise RuntimeError('External backup staging requires a path and expected device')
+    path = Path(directory)
+    if not path.is_absolute() or not path.is_dir() or path.resolve() != path:
+        raise RuntimeError('External backup staging must be a real absolute directory')
+    device = path.stat().st_dev
+    actual_device = f'{os.major(device)}:{os.minor(device)}'
+    mounts = Path('/proc/self/mountinfo').read_text().splitlines()
+    mounted = any(len(fields := line.split()) > 5
+                  and fields[2] == expected_device
+                  and re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4]) == str(path)
+                  for line in mounts)
+    if not mounted or actual_device != expected_device or device == CONFIG.stat().st_dev:
+        raise RuntimeError('External backup staging mount/device verification failed')
+    return config_disk, shutil.disk_usage(path), True
 
 
 def reclaimable_export(path):
@@ -176,12 +206,19 @@ def validate_native_path(ha_config, backup_config):
 
 
 def check_native_capacity(measured):
-    disk = shutil.disk_usage(CONFIG)  # Refresh after the potentially long scan.
+    # Refresh both filesystems after the potentially long configuration scan.
+    config_disk, disk, separate = backup_filesystems()
     sql = active_export()
-    ceiling = reviewed_export_ceiling(disk.total)
+    ceiling = reviewed_export_ceiling(config_disk.total)
     if sql is None or sql.is_symlink() or not sql.is_file() or sql.stat().st_size > ceiling:
         raise RuntimeError('Native backup requires a regular, size-limited recorder export')
     sql_bytes = sql.stat().st_size
+    if separate:
+        config_report = {'free_bytes': config_disk.free, 'total_bytes': config_disk.total,
+                         'reserve_bytes': reserve_bytes(config_disk.total)}
+        print(json.dumps({'config_capacity': config_report}), flush=True)
+        if config_disk.free < reserve_bytes(config_disk.total):
+            raise RuntimeError('Insufficient free space on configuration filesystem; verified SQL export retained')
     required = reserve_bytes(disk.total) + sql_bytes + archive_overhead(measured)
     report = {'free_bytes': disk.free, 'reserve_bytes': reserve_bytes(disk.total),
               'measured_config_bytes': measured, 'required_bytes': required,
@@ -226,13 +263,16 @@ def prepare():
         (STAGE / name).unlink(missing_ok=True)
     active = active_export(cleanup=True)
     measured = measure_config()
-    disk = shutil.disk_usage(CONFIG)
+    disk, archive_disk, separate = backup_filesystems()
     reclaimable = reclaimable_export(active) if active else 0
-    limit = compressed_budget(disk.free, reclaimable, disk.total, measured)
+    limit = compressed_budget(disk.free, reclaimable, disk.total, measured,
+                              archive_disk if separate else None)
     print(json.dumps({'export_capacity': {'free_bytes': disk.free,
           'reserve_bytes': reserve_bytes(disk.total), 'measured_config_bytes': measured,
           'compressed_limit_bytes': limit, 'reclaimable_bytes': reclaimable,
-          'reviewed_ceiling_bytes': reviewed_export_ceiling(disk.total)}}), flush=True)
+          'reviewed_ceiling_bytes': reviewed_export_ceiling(disk.total),
+          'separate_archive_filesystem': separate, 'archive_free_bytes': archive_disk.free,
+          'archive_reserve_bytes': reserve_bytes(archive_disk.total)}}), flush=True)
     (WORK / 'limit-blocks').write_text(str(limit // 1024))
     settings = {'host': parsed.host, 'port': parsed.port or 3306,
                 'user': parsed.username, 'password': parsed.password}

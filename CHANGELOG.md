@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.1.8] - 2026-10-19
+
+### Fixed
+
+- Budget native backup staging on its actual filesystem when Home Assistant uses
+  a dedicated temporary-archive mount. Preserve independent free-space reserves
+  for the recorder export and archive instead of charging both to the config disk.
+
+### Upgrade
+
+Re-run the native backup installer with the existing private node, database CIDR,
+time zone and configuration PVC settings. It discovers Home Assistant's existing
+temporary-backup hostPath and mounts it read-only into the backup workers for
+capacity checks. Installations with in-PVC temporary archives retain the existing
+single-filesystem budget. Publishing this source does not change running jobs.
+
+### Security
+
+The installer verifies the running HA node, configuration PVC/subPath and dedicated
+mount. Workers reject a missing or changed staging device instead of silently
+using the root filesystem. No backup retention or recovery validation is relaxed.
+
 ## [0.1.7] - 2026-10-19
 
 ### Fixed
