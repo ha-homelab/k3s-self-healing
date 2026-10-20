@@ -64,7 +64,15 @@ python scripts/install-core-updater.py --kubeconfig /private/path/kubeconfig \
 The first command only renders; the installer defaults to server-side dry run.
 Repeat the installer with `--apply` after reviewing the discovered PVC/node.
 Its default names are the supported release layout above. Nonstandard Helm
-release names require additional worker changes, not only installer flags.
+release and StatefulSet names require additional worker changes; the installer
+rejects unsupported StatefulSet names.
+
+For a different namespace or HA/MQTT service name, select it with `--namespace`,
+`--ha-service` and `--mqtt-service`. The installer writes the matching `ha_url`
+and `mqtt_host` into `settings.json`, which is the updater's endpoint source.
+Omit those settings to let the installer fill them, or supply exactly matching
+values; stale or conflicting values fail before any manifest apply. The unused
+`HA_URL` and `MQTT_HOST` environment variables no longer appear in the manifest.
 
 An approval never means "install whichever version is newest later". A failed
 backup, wrong receipt, interrupted write, or unsuccessful preflight stops the

@@ -78,7 +78,7 @@ class CredentialTests(unittest.TestCase):
 
 class RenderTests(unittest.TestCase):
     def setUp(self):
-        self.args = argparse.Namespace(namespace='lab', ha_statefulset='custom-ha',
+        self.args = argparse.Namespace(namespace='lab', ha_statefulset='home-assistant',
                                        ha_service='ha-api', mqtt_service='broker', storage_class='local-path')
         self.cluster = {
             'node': 'test-node', 'pvc': 'existing-ha-data', 'subpath': 'config',
@@ -134,11 +134,38 @@ class RenderTests(unittest.TestCase):
 
     def test_worker_settings_cannot_target_a_different_config_volume(self):
         with self.assertRaisesRegex(ValueError, 'config_pvc conflicts'):
-            INSTALL.cluster_settings({'config_pvc': 'some-other-config'}, 'lab', self.cluster)
-        normalized = INSTALL.cluster_settings({}, 'lab', self.cluster)
+            INSTALL.cluster_settings({'config_pvc': 'some-other-config'}, self.args, self.cluster)
+        normalized = INSTALL.cluster_settings({}, self.args, self.cluster)
         self.assertEqual(normalized['namespace'], 'lab')
         self.assertEqual(normalized['config_pvc'], 'existing-ha-data')
         self.assertEqual(normalized['config_subpath'], 'config')
+
+    def test_runtime_endpoints_follow_selected_services_and_namespace(self):
+        settings = INSTALL.cluster_settings({}, self.args, self.cluster)
+        configmap = INSTALL.code_configmap(settings, self.args.namespace)
+        configured = json.loads(configmap['data']['settings.json'])
+        self.assertEqual(configured['ha_url'], 'http://ha-api.lab.svc.cluster.local:8123')
+        self.assertEqual(configured['mqtt_host'], 'broker.lab.svc.cluster.local')
+        self.assertEqual(INSTALL.cluster_settings(dict(settings), self.args, self.cluster), settings)
+        container = self.one('Deployment')['spec']['template']['spec']['containers'][0]
+        self.assertFalse({'HA_URL', 'MQTT_HOST'} & {item['name'] for item in container['env']})
+
+    def test_conflicting_runtime_endpoints_are_rejected(self):
+        for key, value in (
+                ('ha_url', 'http://home-assistant.homeassistant.svc.cluster.local:8123'),
+                ('mqtt_host', 'mosquitto.homeassistant.svc.cluster.local')):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, key + ' conflicts'):
+                INSTALL.cluster_settings({key: value}, self.args, self.cluster)
+
+    def test_unsupported_statefulset_is_rejected_before_cluster_access(self):
+        with patch('sys.argv', ['install', '--kubeconfig', '/unused',
+                               '--settings-file', '/unused', '--ha-statefulset', 'custom-ha']), \
+                patch.object(INSTALL, 'Kubectl') as kube, \
+                patch('sys.stderr'):
+            with self.assertRaises(SystemExit) as error:
+                INSTALL.main()
+        self.assertEqual(error.exception.code, 2)
+        kube.assert_not_called()
 
     def test_api_and_ingress_policy_use_discovered_addresses(self):
         policy = self.one('NetworkPolicy', 'ha-core-updater')['spec']
@@ -156,7 +183,7 @@ class RenderTests(unittest.TestCase):
         writes = [rule for rule in role['rules'] if {'patch', 'update'} & set(rule['verbs'])]
         self.assertEqual({tuple(rule['resources']) for rule in writes}, {('statefulsets',), ('cronjobs',), ('secrets',)})
         statefulset = next(rule for rule in writes if rule['resources'] == ['statefulsets'])
-        self.assertEqual(statefulset['resourceNames'], ['custom-ha'])
+        self.assertEqual(statefulset['resourceNames'], ['home-assistant'])
         self.assertFalse(any('pods/exec' in rule['resources'] for rule in role['rules']))
         self.assertFalse(any(rule['resources'] == ['pods'] and 'delete' in rule['verbs'] for rule in role['rules']))
 

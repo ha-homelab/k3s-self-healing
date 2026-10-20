@@ -138,9 +138,7 @@ spec:
           command: [python, /app/server.py]
           env:
             - {name: CONFIG_PATH, value: /app/settings.json}
-            - {name: HA_URL, value: 'http://home-assistant.homeassistant.svc.cluster.local:8123'}
             - {name: HA_TOKEN_FILE, value: /ha-api/token}
-            - {name: MQTT_HOST, value: mosquitto.homeassistant.svc.cluster.local}
             - {name: PYTHONDONTWRITEBYTECODE, value: '1'}
             - {name: PYTHONUNBUFFERED, value: '1'}
             - {name: XDG_CACHE_HOME, value: /tmp/cache}

@@ -213,11 +213,6 @@ def render(args, cluster, configmap, root=ROOT, credential_checksum=None):
             pod['nodeSelector']['kubernetes.io/hostname'] = cluster['node']
             next(volume for volume in pod['volumes'] if volume['name'] == 'config')['persistentVolumeClaim']['claimName'] = cluster['pvc']
             runtime = pod['containers'][0]
-            for env in runtime['env']:
-                if env['name'] == 'HA_URL':
-                    env['value'] = f'http://{args.ha_service}.{args.namespace}.svc.cluster.local:8123'
-                elif env['name'] == 'MQTT_HOST':
-                    env['value'] = f'{args.mqtt_service}.{args.namespace}.svc.cluster.local'
             if cluster['subpath']:
                 next(mount for mount in runtime['volumeMounts'] if mount['name'] == 'config')['subPath'] = cluster['subpath']
         elif item['kind'] == 'NetworkPolicy' and item['metadata']['name'] == NAME:
@@ -234,10 +229,16 @@ def render(args, cluster, configmap, root=ROOT, credential_checksum=None):
     return [configmap, *objects]
 
 
-def cluster_settings(settings, namespace, cluster):
-    """Jobs and the controller must inspect the same namespace/config volume."""
-    for key, expected in {'namespace': namespace, 'config_pvc': cluster['pvc'],
-                          'config_subpath': cluster['subpath']}.items():
+def cluster_settings(settings, args, cluster):
+    """Keep runtime settings consistent with discovered storage and services."""
+    expected_settings = {
+        'namespace': args.namespace,
+        'config_pvc': cluster['pvc'],
+        'config_subpath': cluster['subpath'],
+        'ha_url': f'http://{args.ha_service}.{args.namespace}.svc.cluster.local:8123',
+        'mqtt_host': f'{args.mqtt_service}.{args.namespace}.svc.cluster.local',
+    }
+    for key, expected in expected_settings.items():
         if key in settings and settings[key] != expected:
             raise ValueError(f'Settings {key} conflicts with the discovered deployment; review the override')
         settings[key] = expected
@@ -250,7 +251,8 @@ def main():
     parser.add_argument('--settings-file', type=Path, required=True, help='Non-secret updater settings JSON')
     parser.add_argument('--credentials-file', type=Path, help='Private JSON with all five credential values; omit to preserve the existing Secret')
     parser.add_argument('--namespace', default='homeassistant')
-    parser.add_argument('--ha-statefulset', default='home-assistant')
+    parser.add_argument('--ha-statefulset', default='home-assistant', choices=['home-assistant'],
+                        help='The worker currently supports only the home-assistant StatefulSet/release')
     parser.add_argument('--ha-service', default='home-assistant')
     parser.add_argument('--mqtt-service', default='mosquitto')
     parser.add_argument('--config-pvc', help='Default: discover current HA /config PVC')
@@ -271,7 +273,7 @@ def main():
         if secret is None:
             kube.require_secret(NAME + '-credentials', CREDENTIAL_KEYS)
         cluster = discover(kube, args)
-        configmap = code_configmap(cluster_settings(settings, args.namespace, cluster), args.namespace)
+        configmap = code_configmap(cluster_settings(settings, args, cluster), args.namespace)
         if secret:
             credential_checksum = hashlib.sha256(json.dumps(secret['data'], sort_keys=True).encode()).hexdigest()
         else:
