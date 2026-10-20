@@ -1,3 +1,5 @@
+# Install through install-native-backup.py to validate placement and mirror any
+# external HA temporary-backup mount as a read-only capacity probe.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
