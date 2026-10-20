@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import DEFAULT, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'core_updates'))
@@ -99,7 +99,7 @@ class ModelTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(RuntimeError):self.store.reoffer_snapshot(body)
 
 from aiohttp.test_utils import TestClient, TestServer
-from server import create_app, recover_interrupted
+from server import TASKS, create_app, recover_interrupted
 
 class HttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -127,6 +127,26 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post('/approve',json={},headers=headers)).status,422)
         self.assertEqual((await self.client.post('/approve',json=self.body|{'candidate_id':'0'*32},headers=headers)).status,409)
         self.assertEqual(self.calls,[])
+
+    async def test_non_ascii_authorization_is_forbidden_without_side_effects(self):
+        original_state = self.store.path.read_bytes()
+        routes = [('GET', '/status', None), ('POST', '/approve', self.body),
+                  ('POST', '/reoffer', self.body | {'action': 'reoffer'})]
+        for character in ('é', '☃'):
+            for method, path, body in routes:
+                with self.subTest(character=character, path=path), patch.multiple(
+                        self.store, read=DEFAULT, approve=DEFAULT,
+                        reoffer_snapshot=DEFAULT, reoffer=DEFAULT) as store_calls:
+                    response = await self.client.request(method, path, json=body, headers={
+                        'Authorization': 'Bearer ' + 'a' * 47 + character})
+                    self.assertEqual(response.status, 403)
+                    for call in store_calls.values():
+                        call.assert_not_called()
+                    self.assertEqual(self.store.path.read_bytes(), original_state)
+                    self.assertEqual(self.runtime.mock_calls, [])
+                    self.assertEqual(self.calls, [])
+                    self.assertEqual(self.client.server.app[TASKS], set())
+
     async def test_exact_approval_returns_202_and_second_returns_409(self):
         headers={'Authorization':'Bearer '+'a'*48}
         self.assertEqual((await self.client.post('/approve',json=self.body,headers=headers)).status,202)
