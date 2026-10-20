@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.9] - 2026-10-20
+
+### Fixed
+
+- Preserve the last verified recorder export when staging directories or
+  metadata are linked to another generation. Publish metadata with private,
+  exclusively created temporary files and atomic replacement.
+- Validate all native backup resources before creating the export directory or
+  applying changes. Refuse installation while an unfinished Job uses the shared
+  code, and recheck the HA Pod and Job state immediately before applying.
+- Select the HA container by its configuration mount, require the backup workers
+  to match its immutable image digest, and verify the installed native backup
+  contract before making changes.
+
+### Upgrade
+
+Align both HA worker images in the installation's native backup template with
+the running, reviewed HA image before rerunning the installer. Schedule this
+operation outside backup runs and HA rollouts. Publication alone changes no
+running workload or recovery data.
+
+### Security
+
+Linked recorder staging or metadata now fails closed without rewriting the
+previous verified pair. Installation preflight does not make multi-resource
+application atomic; concurrent installers and backup starts remain unsupported.
+Backup authorization, retention, runtime source checks and capacity reserves are
+unchanged.
+
 ## [0.1.8] - 2026-10-19
 
 ### Fixed

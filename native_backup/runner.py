@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
 import tarfile
+import tempfile
 import time
 
 from dump_format import inspect_dump, known_dump, read_manifest, validate_metadata, verify_dump
@@ -22,13 +24,46 @@ OUTPUT = CONFIG / 'recorder_backup'
 
 
 def write_json(path, value):
-    temporary = path.with_suffix(path.suffix + '.tmp')
-    with temporary.open('w') as stream:
-        stream.write(json.dumps(value, indent=2) + '\n')
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-    fsync_directory(path.parent)
+    """Publish metadata without following a pre-existing temporary-file link."""
+    descriptor, name = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(json.dumps(value, indent=2) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def recorder_directory(path, create=False):
+    """Reject linked CONFIG-relative ancestors before recorder reads or writes."""
+    relative = path.relative_to(CONFIG)
+    if '..' in relative.parts or not stat.S_ISDIR(CONFIG.lstat().st_mode):
+        raise ValueError('Regular recorder configuration directory required')
+    current = CONFIG
+    for part in relative.parts:
+        current = current / part
+        if create:
+            current.mkdir(mode=0o700, exist_ok=True)
+        if not stat.S_ISDIR(current.lstat().st_mode):
+            raise ValueError('Regular recorder directory required; links are not supported')
+
+
+def recorder_paths(create_stage=False):
+    """Keep staged metadata independent from the previous verified generation."""
+    recorder_directory(OUTPUT)
+    recorder_directory(STAGE, create=create_stage)
+    for directory in (OUTPUT, STAGE):
+        manifest = directory / 'manifest.json'
+        try:
+            info = manifest.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError('Regular unlinked recorder manifest required')
 
 
 def fsync_directory(path):
@@ -246,6 +281,7 @@ def check_native_capacity(measured):
 
 
 def prepare():
+    recorder_paths(create_stage=True)
     import sqlalchemy
     import yaml
     node = yaml.compose((CONFIG / 'secrets.yaml').read_text())
@@ -253,7 +289,6 @@ def prepare():
     parsed = sqlalchemy.engine.make_url(url)
     if parsed.get_backend_name() != 'mysql' or not re.fullmatch(r'[A-Za-z0-9_]+', parsed.database or ''):
         raise ValueError('Only the reviewed MySQL recorder schema is supported')
-    STAGE.mkdir(parents=True, exist_ok=True, mode=0o700)
     WORK.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Kubernetes creates the mounted emptyDir before this process starts.
     WORK.chmod(0o700)
@@ -290,12 +325,13 @@ def prepare():
         'started_at': datetime.now(timezone.utc).isoformat(), 'server_version': version,
         'tables': tables, 'method': 'mysqldump --single-transaction --quick --hex-blob',
         'schema_included': True, 'users_and_grants_included': False})
-    shutil.copyfile(WORK / 'manifest.json', STAGE / 'manifest.json')
+    write_json(STAGE / 'manifest.json', json.loads((WORK / 'manifest.json').read_text()))
     write_client_options(settings)
     print('Prepared recorder export; credentials remain in the private temporary volume.', flush=True)
 
 
 def publish():
+    recorder_paths()
     source = STAGE / 'recorder.sql.xz.pending'
     if source.is_symlink() or not source.is_file():
         raise ValueError('Regular staged recorder export required')
@@ -432,7 +468,6 @@ async def native_backup():
 
 
 if __name__ == '__main__':
-    os.umask(0o077)
     os.umask(0o077)
     if sys.argv[1] == 'prepare':
         prepare()

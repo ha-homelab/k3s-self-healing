@@ -61,6 +61,27 @@ export directory and installs the weekly CronJob, not an immediate backup. The
 token file must be mode 0600 or 0400. Confirm the first backup and restore before
 enabling Core updates. The API token has the same sensitivity as HA login access.
 
+Before writing anything, the installer selects the unique container mounting
+`/config`, requires it to be running and ready, and verifies its installed native
+backup contract. Both Python workers in the template must use that HA image's
+immutable digest; a mismatch requires deliberate template alignment, not an
+automatic HA upgrade. The installer server-dry-runs the Secret (when supplied),
+code ConfigMap, CronJob and NetworkPolicy together before its first write.
+
+An unfinished Job using the shared code ConfigMap blocks installation, including
+pending Jobs that have not started a Pod yet. Pod identity and Job state are
+rechecked after admission validation. These checks are not a cluster transaction:
+use an exclusive maintenance window without concurrent installers, HA rollouts or
+scheduled/manual backup starts. A later apply failure can still leave a partial
+update; inspect the resources before retrying.
+
+Recorder staging and export directories must have real, unlinked ancestors
+inside the configuration mount. Existing manifests must be regular files with
+one hard link. The runner rejects aliases before staging cleanup or metadata
+writes, preserving the previous verified export. Metadata is written to a
+private, exclusively created temporary file before atomic replacement. Keep the
+configuration mount free of concurrent untrusted filesystem writers.
+
 ### Separate temporary archive filesystem
 
 When HA mounts `/config/tmp_backups` from a separate host filesystem, the
