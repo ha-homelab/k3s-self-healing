@@ -74,7 +74,10 @@ def create_app(store, runtime, settings, token, worker=run):
     app[TASKS] = set()
 
     def authorized(request):
-        return hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + token)
+        try:
+            return hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + token)
+        except TypeError:
+            return False
 
     async def health(request):
         return web.json_response({"status": "ok"})
