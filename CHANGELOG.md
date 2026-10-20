@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.9] - 2026-10-20
+
+### Fixed
+
+- Keep Core updater runtime endpoints aligned with the installer's selected
+  namespace and HA/MQTT Services. Reject conflicting settings before applying
+  manifests and remove unused endpoint environment variables.
+- Reject custom StatefulSet names that the fixed-name updater worker cannot
+  support.
+
+### Upgrade
+
+Re-run the Core updater installer with the existing private settings and service
+names. Omit `ha_url` and `mqtt_host` to derive them from the selected Services, or
+set them to the same in-cluster endpoints. The installer still defaults to a
+server-side dry run. Publishing this source does not change a running updater.
+
+### Security
+
+The runtime settings and NetworkPolicy now describe the same administrative
+endpoints. Conflicting values fail before manifest application; no credential,
+approval, backup or release-acceptance gate is relaxed.
+
 ## [0.1.8] - 2026-10-19
 
 ### Fixed
