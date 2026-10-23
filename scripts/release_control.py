@@ -109,6 +109,7 @@ ASSET_CHUNK_SIZE = 1024 * 1024
 ASSET_DOWNLOAD_TIMEOUT = 900
 API_READ_TIMEOUT = 30
 API_READ_ATTEMPTS = 3
+EXECUTING_RUN_WAIT_SECONDS = 300
 
 
 class ReleaseError(RuntimeError):
@@ -230,6 +231,23 @@ def parse_json(data: bytes, label: str) -> object:
         raise ReleaseError(f"Invalid JSON in {label}") from exc
 
 
+def _github_http_head(data: bytes) -> tuple[int, bytes]:
+    """Validate one HTTP header block and preserve the following body bytes."""
+    separator = re.search(rb"\r?\n\r?\n", data)
+    if separator is None:
+        raise GitHubError("GitHub response headers are missing or truncated")
+    lines = data[:separator.start()].splitlines()
+    status = re.fullmatch(
+        rb"HTTP/(?:1\.[01]|2(?:\.0)?) ([1-5]\d{2})(?: [^\r\n]*)?", lines[0]
+    ) if lines else None
+    if status is None or any(
+        not re.fullmatch(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*", line)
+        for line in lines[1:]
+    ):
+        raise GitHubError("GitHub response headers are invalid")
+    return int(status.group(1)), data[separator.end():]
+
+
 def github_http_response(stdout: bytes, paginated: bool = False) -> tuple[int, bytes]:
     """Decode protocol headers emitted by gh --include, never its error prose.
 
@@ -237,22 +255,7 @@ def github_http_response(stdout: bytes, paginated: bool = False) -> tuple[int, b
     gh normalizes those server-generated objects (including duplicate keys);
     nonpaginated bodies retain their exact bytes and strict JSON validation.
     """
-    def read_head(data: bytes) -> tuple[int, bytes]:
-        separator = re.search(rb"\r?\n\r?\n", data)
-        if separator is None:
-            raise GitHubError("GitHub response headers are missing or truncated")
-        lines = data[:separator.start()].splitlines()
-        status = re.fullmatch(
-            rb"HTTP/(?:1\.[01]|2(?:\.0)?) ([1-5]\d{2})(?: [^\r\n]*)?", lines[0]
-        ) if lines else None
-        if status is None or any(
-            not re.fullmatch(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*", line)
-            for line in lines[1:]
-        ):
-            raise GitHubError("GitHub response headers are invalid")
-        return int(status.group(1)), data[separator.end():]
-
-    status, body = read_head(stdout)
+    status, body = _github_http_head(stdout)
     if not paginated:
         return status, body
     pages: list[object] = []
@@ -279,7 +282,7 @@ def github_http_response(stdout: bytes, paginated: bool = False) -> tuple[int, b
         if separator is None:
             raise GitHubError("GitHub response headers are missing or truncated")
         header = text[position:separator.end()].encode("utf-8", errors="surrogateescape")
-        status, _ = read_head(header)
+        status, _ = _github_http_head(header)
         position = separator.end()
     # A failed page invalidates every preceding page from the same attempt.
     return status, b""
@@ -413,7 +416,10 @@ class GitHub:
         )
         endpoint = f"{self.base}/{path}".rstrip("/")
         if mode == "pages":
-            endpoint += ("&" if "?" in endpoint else "?") + "per_page=100"
+            # Large job pages can fail for partially rerun reusable workflows.
+            # Keep --paginate so smaller responses retain the full inventory.
+            page_size = 20 if path.endswith("/jobs") else 100
+            endpoint += ("&" if "?" in endpoint else "?") + f"per_page={page_size}"
         method_args = {
             "GET": ["--method", "GET"],
             "POST": ["--method", "POST"],
@@ -1106,13 +1112,14 @@ def wait_for_executing_run(
     attempt: int,
     gate: bool = True,
 ) -> JSONObject:
-    """Wait at most 60 seconds for Actions' aggregate status to catch up.
+    """Allow five minutes for Actions' aggregate status to catch up.
 
     A running job may still be reported as queued or waiting after environment
     approval. Those states never authorize publication: only a fresh, fully
     bound in_progress run can pass. Completed RC validation does not wait.
     """
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + EXECUTING_RUN_WAIT_SECONDS
+    reported_status = None
     while True:
         run = cast(JSONObject, gh.api(f"actions/runs/{run_id}"))
         require(run.get("id") == run_id, "Execution run identity mismatch")
@@ -1132,9 +1139,16 @@ def wait_for_executing_run(
         remaining = deadline - time.monotonic()
         require(
             remaining > 0,
-            f"Publication run did not become in_progress within 60 seconds; "
+            f"Publication run did not become in_progress within {EXECUTING_RUN_WAIT_SECONDS} seconds; "
             f"last status: {status!r}, run: {run_id}, attempt: {attempt}",
         )
+        if status != reported_status:
+            print(
+                f"Waiting for Actions run {run_id}, attempt {attempt}: "
+                f"aggregate status {status!r}; at most {remaining:.0f}s remaining",
+                file=sys.stderr,
+            )
+            reported_status = status
         time.sleep(min(2, remaining))
 
 
