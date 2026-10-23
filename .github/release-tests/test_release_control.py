@@ -275,6 +275,69 @@ class MetadataReadRetryTests(unittest.TestCase):
             self.assertNotIn("timeout", run.call_args.kwargs)
 
 
+class JobPaginationTests(unittest.TestCase):
+    """Small job pages retain complete, fail-closed release evidence."""
+
+    @staticmethod
+    def jobs():
+        jobs = [
+            {"id": index, "name": f"check-{index}", "head_sha": SHA,
+             "status": "completed", "conclusion": "success"}
+            for index in range(1, 95)
+        ]
+        jobs[-1]["name"] = "Release gate"
+        return jobs
+
+    @staticmethod
+    def response(jobs):
+        pages = [
+            http_response(stdout=json.dumps({"total_count": len(jobs), "jobs": jobs[start:start + 20]}).encode()).stdout
+            for start in range(0, len(jobs), 20)
+        ]
+        return subprocess.CompletedProcess([], 0, b"\n".join(pages), b"")
+
+    def test_small_pages_keep_all_jobs_and_the_last_page_gate(self):
+        jobs = self.jobs()
+        gh = rc.GitHub(REPO)
+
+        def service(command, **_kwargs):
+            if command[-1].endswith("per_page=100"):
+                return http_response(502)
+            self.assertEqual(command[-1], f"repos/{REPO}/actions/runs/17/attempts/1/jobs?per_page=20")
+            self.assertIn("--paginate", command)
+            return self.response(jobs)
+
+        with patch.object(rc.subprocess, "run", side_effect=service), patch.object(rc.time, "sleep"):
+            self.assertEqual(gh.pages("actions/runs/17/attempts/1/jobs", "jobs"), jobs)
+            rc.validate_run(gh, run(), {"default_branch": "main"}, SHA, 1, completed=True)
+
+    def test_failed_last_page_gate_still_blocks_publication(self):
+        jobs = self.jobs()
+        jobs[-1]["conclusion"] = "failure"
+        with patch.object(rc.subprocess, "run", return_value=self.response(jobs)):
+            with self.assertRaisesRegex(rc.ReleaseError, "successful, completed Release gate"):
+                rc.validate_run(rc.GitHub(REPO), run(), {"default_branch": "main"}, SHA, 1, completed=True)
+
+    def test_later_page_failure_discards_partial_jobs_before_retry(self):
+        failed = http_response(502)
+        failed.stdout = http_response(stdout=b'{"total_count":94,"jobs":[{"id":999}]}').stdout + b"\n" + failed.stdout
+        for recover in (False, True):
+            responses = [failed, self.response(self.jobs())] if recover else [failed] * 3
+            with self.subTest(recover=recover), patch.object(rc.subprocess, "run", side_effect=responses) as command, patch.object(rc.time, "sleep"):
+                if recover:
+                    self.assertEqual(rc.GitHub(REPO).pages("actions/runs/17/attempts/1/jobs", "jobs"), self.jobs())
+                else:
+                    with self.assertRaises(rc.GitHubError):
+                        rc.GitHub(REPO).pages("actions/runs/17/attempts/1/jobs", "jobs")
+                self.assertEqual(command.call_count, len(responses))
+                self.assertTrue(all(call.args[0][-1].endswith("/jobs?per_page=20") for call in command.call_args_list))
+
+    def test_other_paginated_metadata_keeps_its_page_size(self):
+        with patch.object(rc.subprocess, "run", return_value=http_response(stdout=b"[]")) as command:
+            self.assertEqual(rc.GitHub(REPO).pages("releases"), [])
+        self.assertEqual(command.call_args.args[0][-1], f"repos/{REPO}/releases?per_page=100")
+
+
 class AutomaticBetaPreparationTests(unittest.TestCase):
     """An occupied base skips only automatic builds, never explicit requests."""
 
@@ -1916,6 +1979,37 @@ class ExecutingRunStatusTests(unittest.TestCase):
         self.assertEqual(self.sleep.call_count, 4)
         self.assertEqual(self.gh.writes, [])
 
+    def test_running_publication_survives_aggregate_delay_beyond_one_minute(self):
+        """An executing job can see stale aggregate status beyond the old limit."""
+        responses = [{**run(99, False), "status": "queued"} for _ in range(40)] + [
+            run(99, False)
+        ]
+        with (
+            patch.object(self.gh, "api", side_effect=responses) as api,
+            patch.object(rc.sys, "stderr", new_callable=io.StringIO) as diagnostics,
+        ):
+            result = self.wait()
+        self.assertEqual(result["status"], "in_progress")
+        self.assertEqual(self.now, 80)
+        self.assertEqual(api.call_count, 41)
+        self.assertEqual(self.checkout.call_count, 41)
+        self.assertEqual(diagnostics.getvalue().count("Waiting for Actions run"), 1)
+        self.assertIn("attempt 1", diagnostics.getvalue())
+        self.assertEqual(self.gh.writes, [])
+
+    def test_extended_wait_still_rejects_changed_attempt(self):
+        """The extra wait never authorizes a response from a later rerun."""
+        responses = [{**run(99, False), "status": "queued"} for _ in range(40)] + [
+            {**run(99, False), "run_attempt": 2}
+        ]
+        with (
+            patch.object(self.gh, "api", side_effect=responses),
+            self.assertRaisesRegex(rc.ReleaseError, "attempt mismatch"),
+        ):
+            self.wait()
+        self.assertEqual(self.now, 80)
+        self.assertEqual(self.gh.writes, [])
+
     def test_every_refreshed_identity_field_is_rechecked(self):
         """A newly active response cannot swap a run, source, workflow or attempt."""
         changes = [
@@ -1997,13 +2091,13 @@ class ExecutingRunStatusTests(unittest.TestCase):
                 self.gh, "api", return_value={**run(99, False), "status": "waiting"}
             ) as api,
             self.assertRaisesRegex(
-                rc.ReleaseError, "within 60 seconds.*waiting.*99.*1"
+                rc.ReleaseError, "within 300 seconds.*waiting.*99.*1"
             ),
         ):
             self.wait()
-        self.assertEqual(self.now, 60)
-        self.assertEqual(api.call_count, 31)
-        self.assertEqual(self.sleep.call_count, 30)
+        self.assertEqual(self.now, 300)
+        self.assertEqual(api.call_count, 151)
+        self.assertEqual(self.sleep.call_count, 150)
         self.assertEqual(self.gh.writes, [])
 
     def test_completed_candidate_validation_does_not_poll(self):
