@@ -1605,10 +1605,15 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
             with patch.object(
                 rc.subprocess,
                 "run",
-                return_value=subprocess.CompletedProcess([], 0, b"", b""),
+                return_value=subprocess.CompletedProcess(
+                    [],
+                    0,
+                    b'HTTP/2.0 201 Created\r\n\r\n{"id": 10, "name": "app.bin", "state": "uploaded", "size": 7}',
+                    b"",
+                ),
             ) as run:
-                rc.GitHub(REPO).upload("v1.2.3-beta.1", path)
-            self.assertEqual(run.call_args.args[0][1:3], ["release", "upload"])
+                rc.GitHub(REPO).upload("v1.2.3-beta.1", path, release_id=11)
+            self.assertEqual(run.call_args.args[0][1:3], ["api", "--hostname"])
 
 
 class PreparationTests(unittest.TestCase):

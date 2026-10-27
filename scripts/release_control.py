@@ -107,6 +107,7 @@ NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}\Z")
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 ASSET_CHUNK_SIZE = 1024 * 1024
 ASSET_DOWNLOAD_TIMEOUT = 900
+ASSET_UPLOAD_TIMEOUT = 900
 API_READ_TIMEOUT = 30
 API_READ_ATTEMPTS = 3
 EXECUTING_RUN_WAIT_SECONDS = 300
@@ -547,9 +548,10 @@ class GitHub:
             ) from error
         self.response(result, f"GET {endpoint}")
 
-    def upload(self, tag: str, path: Path) -> None:
-        """Upload a canonical tag's staged regular file, with no overwrite option."""
+    def upload(self, tag: str, path: Path, *, release_id: int) -> None:
+        """Upload once to the transaction's known draft, without tag lookup."""
         require(TAG_RE.fullmatch(tag), "Unsupported release upload tag")
+        release_id = positive(release_id, "release ID")
         require(
             path.is_absolute() and NAME_RE.fullmatch(path.name), "Unsafe upload path"
         )
@@ -565,23 +567,60 @@ class GitHub:
             and "#" not in str(path),
             "Upload must come from the private release staging directory",
         )
-        self.response(
+        # A draft is not returned by the published-release-by-tag endpoint.
+        # Reusing its creation ID avoids a separate GraphQL draft lookup for
+        # every file. Never accept an arbitrary upload host from response data.
+        endpoint = (
+            f"https://uploads.github.com/{self.base}/releases/{release_id}/assets"
+            f"?name={quote(path.name, safe='')}"
+        )
+        context = f"upload {tag} {path.name}"
+        try:
             # Developer/CI toolchain selected by the invoking operator via PATH.
-            subprocess.run(  # nosec B603, B607
+            result = subprocess.run(  # nosec B603, B607
                 [
                     "gh",
-                    "release",
-                    "upload",
-                    "--repo",
-                    f"github.com/{self.repo}",
-                    "--",
-                    tag,
+                    "api",
+                    "--hostname",
+                    GITHUB_HOSTNAME,
+                    "--include",
+                    "--method",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/octet-stream",
+                    "--input",
                     str(parent / path.name),
+                    "--",
+                    endpoint,
                 ],
                 capture_output=True,
                 check=False,
-            ),
-            f"upload {tag} {path.name}",
+                timeout=ASSET_UPLOAD_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as error:
+            # The server may have received the bytes. Leave the draft intact;
+            # replaying this write could replace or duplicate an existing asset.
+            raise GitHubError(
+                f"{context}: asset upload exceeded {ASSET_UPLOAD_TIMEOUT} seconds"
+            ) from error
+        try:
+            http = github_http_response(result.stdout or b"")
+        except GitHubError as error:
+            # A transport/CLI failure may precede any HTTP response. Preserve
+            # its error context, but never retry a possibly committed write.
+            self.response(result, context)
+            raise GitHubError(f"{context}: {error}") from error
+        response = self.response(result, context, http)
+        require(http[0] == 201, f"{context}: upload was not confirmed as created")
+        asset = parse_json(response, context)
+        require(isinstance(asset, dict), f"{context}: invalid asset response")
+        positive(asset.get("id"), "uploaded asset ID")
+        require(
+            asset.get("name") == path.name
+            and asset.get("state") == "uploaded"
+            and type(asset.get("size")) is int
+            and asset.get("size") == path.stat().st_size,
+            f"{context}: upload response did not confirm the staged asset",
         )
 
 
@@ -1064,6 +1103,34 @@ def validate_run_provenance(
     )
 
 
+def release_gate_ready(
+    gh: GitHub, run_id: int, sha: str, attempt: int, *, allow_pending: bool = False
+) -> bool:
+    """Require exact gate success; optionally report unfinished API metadata."""
+    jobs = gh.pages(f"actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
+    gates = [job for job in jobs if job.get("name") == "Release gate"]
+    failure = "Exactly one successful, completed Release gate is required; skipped is not a pass"
+    if not gates and allow_pending:
+        return False
+    require(len(gates) == 1, failure)
+    gate = gates[0]
+    require(gate.get("head_sha") == sha, "Release gate SHA mismatch")
+    if allow_pending and gate.get("status") in {
+        "queued",
+        "requested",
+        "pending",
+        "waiting",
+        "in_progress",
+    }:
+        require(gate.get("conclusion") is None, failure)
+        return False
+    require(
+        gate.get("status") == "completed" and gate.get("conclusion") == "success",
+        failure,
+    )
+    return True
+
+
 # Keep the independently verified provenance fields explicit at each call site.
 # pylint: disable-next=too-many-arguments
 def validate_run(
@@ -1087,18 +1154,7 @@ def validate_run(
             run.get("status") == "in_progress", "Publication run is not in progress"
         )
     if gate:
-        jobs = gh.pages(
-            f"actions/runs/{positive(run.get('id'), 'run ID')}/attempts/{attempt}/jobs",
-            "jobs",
-        )
-        gates = [job for job in jobs if job.get("name") == "Release gate"]
-        require(
-            len(gates) == 1
-            and gates[0].get("status") == "completed"
-            and gates[0].get("conclusion") == "success",
-            "Exactly one successful, completed Release gate is required; skipped is not a pass",
-        )
-        require(gates[0].get("head_sha") == sha, "Release gate SHA mismatch")
+        release_gate_ready(gh, positive(run.get("id"), "run ID"), sha, attempt)
 
 
 # Execution identity is deliberately checked again on every fresh response.
@@ -1112,11 +1168,14 @@ def wait_for_executing_run(
     attempt: int,
     gate: bool = True,
 ) -> JSONObject:
-    """Allow five minutes for Actions' aggregate status to catch up.
+    """Allow five shared minutes for Actions' run and gate metadata to catch up.
 
     A running job may still be reported as queued or waiting after environment
     approval. Those states never authorize publication: only a fresh, fully
-    bound in_progress run can pass. Completed RC validation does not wait.
+    bound in_progress run and successful prerequisite gate can pass. Missing or
+    unfinished gate metadata shares the same deadline; terminal non-success,
+    conflicting identity and duplicate gates fail immediately. Completed RC
+    validation does not wait.
     """
     deadline = time.monotonic() + EXECUTING_RUN_WAIT_SECONDS
     reported_status = None
@@ -1129,26 +1188,42 @@ def wait_for_executing_run(
         require(
             run.get("conclusion") is None, "Publication run already has a conclusion"
         )
-        if status == "in_progress":
-            validate_run(gh, run, info, sha, attempt, completed=False, gate=gate)
+        if status == "in_progress" and (
+            not gate or release_gate_ready(gh, run_id, sha, attempt, allow_pending=True)
+        ):
+            require(
+                time.monotonic() < deadline,
+                f"Publication metadata was not ready within {EXECUTING_RUN_WAIT_SECONDS} seconds; "
+                f"run: {run_id}, attempt: {attempt}",
+            )
             return run
         require(
-            status in {"queued", "requested", "pending", "waiting"},
+            status in {"queued", "requested", "pending", "waiting", "in_progress"},
             f"Publication run is not active: {status!r}",
+        )
+        waiting_for = (
+            "Release gate metadata"
+            if status == "in_progress"
+            else f"aggregate status {status!r}"
+        )
+        timeout_target = (
+            "Release gate did not become successful"
+            if status == "in_progress"
+            else "Publication run did not become in_progress"
         )
         remaining = deadline - time.monotonic()
         require(
             remaining > 0,
-            f"Publication run did not become in_progress within {EXECUTING_RUN_WAIT_SECONDS} seconds; "
+            f"{timeout_target} within {EXECUTING_RUN_WAIT_SECONDS} seconds; "
             f"last status: {status!r}, run: {run_id}, attempt: {attempt}",
         )
-        if status != reported_status:
+        if waiting_for != reported_status:
             print(
                 f"Waiting for Actions run {run_id}, attempt {attempt}: "
-                f"aggregate status {status!r}; at most {remaining:.0f}s remaining",
+                f"{waiting_for}; at most {remaining:.0f}s remaining",
                 file=sys.stderr,
             )
-            reported_status = status
+            reported_status = waiting_for
         time.sleep(min(2, remaining))
 
 
@@ -1603,7 +1678,7 @@ def _publish_prepared(
     )
     release_id = positive(release.get("id"), "release ID")
     for path in sorted(directory.iterdir()):
-        gh.upload(tag, path)
+        gh.upload(tag, path, release_id=release_id)
     uploaded = gh.pages(f"releases/{release_id}/assets")
     expected = {path.name: path for path in directory.iterdir()}
     require(
