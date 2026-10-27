@@ -39,7 +39,7 @@ class StrictGitHub:
             raise AssertionError(message)
         return self.responses.pop(0)
 
-    def upload(self, tag: str, path: Path):
+    def upload(self, tag: str, path: Path, *, release_id: int):
         self.writes.append(("upload", tag, path))
         message = f"Unexpected remote upload: {tag} {path}"
         raise AssertionError(message)

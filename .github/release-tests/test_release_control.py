@@ -665,12 +665,10 @@ class FakeGitHub:
         """Write the stored bytes through the release client's streaming contract."""
         output.write(self.binary(path))
 
-    def upload(self, tag, path):
+    def upload(self, tag, path, *, release_id):
         """Model asset upload and optionally corrupt its server-side bytes."""
         self.writes.append(("upload", tag, path.name))
-        release_id = next(
-            key for key, value in self.releases.items() if value["tag_name"] == tag
-        )
+        assert self.releases[release_id]["tag_name"] == tag
         asset_id = max(self.files) + 1
         data = path.read_bytes()
         self.files[asset_id] = b"x" * len(data) if self.corrupt_upload else data
@@ -1573,11 +1571,11 @@ class TransportTests(unittest.TestCase):
                     patch.object(rc.subprocess, "run") as command,
                     self.assertRaises(rc.ReleaseError),
                 ):
-                    gh.upload(tag, path)
+                    gh.upload(tag, path, release_id=10)
                 command.assert_not_called()
 
     def test_upload_never_overwrites_or_retries_an_existing_asset(self):
-        """Keep the gh no-clobber default even when GitHub rejects an existing asset."""
+        """A conflicting asset cannot cause a second POST or an overwrite."""
         gh = rc.GitHub(REPO)
         with tempfile.TemporaryDirectory(prefix="release-promote-") as temp:
             asset = Path(temp) / "package.tar.gz"
@@ -1592,21 +1590,118 @@ class TransportTests(unittest.TestCase):
                 ) as command,
                 self.assertRaises(rc.GitHubError),
             ):
-                gh.upload("v1.2.3", asset)
+                gh.upload("v1.2.3", asset, release_id=10)
             command.assert_called_once_with(
                 [
                     "gh",
-                    "release",
-                    "upload",
-                    "--repo",
-                    f"github.com/{REPO}",
-                    "--",
-                    "v1.2.3",
+                    "api",
+                    "--hostname",
+                    "github.com",
+                    "--include",
+                    "--method",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/octet-stream",
+                    "--input",
                     str(asset.resolve()),
+                    "--",
+                    f"https://uploads.github.com/repos/{REPO}/releases/10/assets?name=package.tar.gz",
                 ],
                 capture_output=True,
                 check=False,
+                timeout=rc.ASSET_UPLOAD_TIMEOUT,
             )
+
+    def test_upload_uses_known_id_and_encodes_asset_name_without_tag_lookup(self):
+        gh = rc.GitHub(REPO)
+        with tempfile.TemporaryDirectory(prefix="release-versioned-") as temp:
+            asset = Path(temp) / "package+arm64.tar.gz"
+            asset.write_bytes(b"package")
+            response = subprocess.CompletedProcess(
+                [],
+                0,
+                b"HTTP/2.0 201 Created\r\n\r\n"
+                + json.dumps(
+                    {
+                        "id": 91,
+                        "name": asset.name,
+                        "state": "uploaded",
+                        "size": 7,
+                    }
+                ).encode(),
+                b"",
+            )
+            with patch.object(rc.subprocess, "run", return_value=response) as command:
+                gh.upload(RC_TAG, asset, release_id=42)
+            command.assert_called_once()
+            args = command.call_args.args[0]
+            self.assertEqual(
+                args[-1],
+                f"https://uploads.github.com/repos/{REPO}/releases/42/assets?name=package%2Barm64.tar.gz",
+            )
+            self.assertNotIn(RC_TAG, args)
+            self.assertEqual(
+                Path(args[args.index("--input") + 1]).read_bytes(), b"package"
+            )
+
+    def test_upload_rejects_invalid_id_before_any_request(self):
+        with tempfile.TemporaryDirectory(prefix="release-versioned-") as temp:
+            asset = Path(temp) / "package.tar.gz"
+            asset.write_bytes(b"package")
+            for release_id in (0, -1, True, "01", "42/assets?other=1", None):
+                with (
+                    self.subTest(release_id=release_id),
+                    patch.object(rc.subprocess, "run") as command,
+                ):
+                    with self.assertRaises(rc.ReleaseError):
+                        rc.GitHub(REPO).upload(RC_TAG, asset, release_id=release_id)
+                    command.assert_not_called()
+
+    def test_upload_timeout_is_not_retried_and_does_not_expose_output(self):
+        with tempfile.TemporaryDirectory(prefix="release-versioned-") as temp:
+            asset = Path(temp) / "package.tar.gz"
+            asset.write_bytes(b"package")
+            timeout = subprocess.TimeoutExpired(
+                ["private-path"], 900, output=b"private-body"
+            )
+            with patch.object(rc.subprocess, "run", side_effect=timeout) as command:
+                with self.assertRaises(rc.GitHubError) as caught:
+                    rc.GitHub(REPO).upload(RC_TAG, asset, release_id=42)
+                command.assert_called_once()
+            self.assertNotIn("private", str(caught.exception))
+            self.assertNotIn(temp, str(caught.exception))
+
+    def test_upload_requires_created_matching_complete_asset(self):
+        with tempfile.TemporaryDirectory(prefix="release-versioned-") as temp:
+            asset = Path(temp) / "package.tar.gz"
+            asset.write_bytes(b"package")
+            expected = {"id": 91, "name": asset.name, "state": "uploaded", "size": 7}
+            variants = [
+                (200, expected),
+                (201, []),
+                (201, {**expected, "id": 0}),
+                (201, {**expected, "name": "wrong.tar.gz"}),
+                (201, {**expected, "state": "starter"}),
+                (201, {**expected, "size": 6}),
+                (201, {**expected, "size": True}),
+            ]
+            for status, body in variants:
+                response = subprocess.CompletedProcess(
+                    [],
+                    0,
+                    f"HTTP/2.0 {status} Response\r\n\r\n".encode()
+                    + json.dumps(body).encode(),
+                    b"",
+                )
+                with (
+                    self.subTest(status=status, body=body),
+                    patch.object(
+                        rc.subprocess, "run", return_value=response
+                    ) as command,
+                ):
+                    with self.assertRaises(rc.ReleaseError):
+                        rc.GitHub(REPO).upload(RC_TAG, asset, release_id=42)
+                    command.assert_called_once()
 
     def test_upload_parse_failure_keeps_draft_and_reports_safe_asset_context(self):
         """A committed upload with a broken response must not be retried or published."""
@@ -1614,9 +1709,9 @@ class TransportTests(unittest.TestCase):
         client = rc.GitHub(REPO)
         tag = "v1.2.3-beta.7"
 
-        def accepted_upload_then_failed_response(upload_tag, path):
-            FakeGitHub.upload(gh, upload_tag, path)
-            client.upload(upload_tag, path)
+        def accepted_upload_then_failed_response(upload_tag, path, *, release_id):
+            FakeGitHub.upload(gh, upload_tag, path, release_id=release_id)
+            client.upload(upload_tag, path, release_id=release_id)
 
         with tempfile.TemporaryDirectory(prefix="release-versioned-") as temp:
             asset = Path(temp) / rc.MANIFEST
@@ -1646,7 +1741,7 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(len(gh.assets[release_id]), 1)
             self.assertEqual(sum(write[0] == "upload" for write in gh.writes), 1)
             self.assertFalse(any(write[1] == "PATCH" for write in gh.writes))
-            upload.assert_called_once_with(tag, asset)
+            upload.assert_called_once_with(tag, asset, release_id=release_id)
             command.assert_called_once()
             self.assertNotIn("--clobber", command.call_args.args[0])
             self.assertNotIn(temp, str(error.exception))
@@ -1655,6 +1750,26 @@ class TransportTests(unittest.TestCase):
                 str(error.exception),
                 f"upload {tag} {asset.name}: unexpected end of JSON input",
             )
+
+    def test_upload_unconfirmed_http_response_is_never_retried(self):
+        """A successful CLI exit alone cannot confirm the committed asset."""
+        with tempfile.TemporaryDirectory(prefix="release-versioned-") as temp:
+            asset = Path(temp) / "package.tar.gz"
+            asset.write_bytes(b"package")
+            for stdout in (None, b"private response body", b"HTTP/2.0 201 Created\r\n"):
+                response = subprocess.CompletedProcess([], 0, stdout, b"")
+                with (
+                    self.subTest(stdout=stdout),
+                    patch.object(
+                        rc.subprocess, "run", return_value=response
+                    ) as command,
+                ):
+                    with self.assertRaises(rc.GitHubError) as error:
+                        rc.GitHub(REPO).upload(RC_TAG, asset, release_id=42)
+                    command.assert_called_once()
+                    self.assertIn(f"upload {RC_TAG} {asset.name}", str(error.exception))
+                    self.assertNotIn("private response body", str(error.exception))
+                    self.assertNotIn(temp, str(error.exception))
 
     def test_canonical_numeric_fields_remain_ascii(self):
         """Reject Unicode digits after adopting concise regexes with ASCII flags."""
@@ -1958,11 +2073,169 @@ class ExecutingRunStatusTests(unittest.TestCase):
         """Move a fake monotonic clock without real sleeps."""
         self.now += seconds
 
-    def wait(self):
+    def wait(self, gate=False):
         """Use the exact current run binding with an independently tested gate."""
         return rc.wait_for_executing_run(
-            self.gh, 99, "stable", self.gh.info, SHA, 1, gate=False
+            self.gh, 99, "stable", self.gh.info, SHA, 1, gate=gate
         )
+
+    def test_gate_metadata_must_catch_up_after_the_run_becomes_active(self):
+        """A running publisher can precede its prerequisite's jobs API update."""
+        ready = self.gh.jobs[0]
+        snapshots = (
+            [[]]
+            + [
+                [{**ready, "status": status, "conclusion": None}]
+                for status in (
+                    "queued",
+                    "requested",
+                    "pending",
+                    "waiting",
+                    "in_progress",
+                )
+            ]
+            + [[ready]]
+        )
+        with (
+            patch.object(self.gh, "api", return_value=run(99, False)) as api,
+            patch.object(self.gh, "pages", side_effect=snapshots) as pages,
+        ):
+            result = self.wait(gate=True)
+        self.assertEqual(result["status"], "in_progress")
+        self.assertEqual(api.call_count, len(snapshots))
+        self.assertEqual(self.checkout.call_count, len(snapshots))
+        self.assertEqual(self.now, 2 * (len(snapshots) - 1))
+        for call in pages.call_args_list:
+            self.assertEqual(call.args, ("actions/runs/99/attempts/1/jobs", "jobs"))
+        self.assertEqual(self.gh.writes, [])
+
+    def test_run_and_gate_propagation_share_one_deadline(self):
+        """Becoming active must not restart the five-minute publication wait."""
+
+        def delayed_run(_path):
+            return {
+                **run(99, False),
+                "status": "queued" if self.now < 80 else "in_progress",
+            }
+
+        with (
+            patch.object(self.gh, "api", side_effect=delayed_run),
+            patch.object(self.gh, "pages", return_value=[]),
+            patch.object(rc.sys, "stderr", new_callable=io.StringIO),
+            self.assertRaisesRegex(rc.ReleaseError, "Release gate.*within 300 seconds"),
+        ):
+            self.wait(gate=True)
+        self.assertEqual(self.now, 300)
+        self.assertEqual(self.sleep.call_count, 150)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_slow_successful_read_cannot_exceed_the_shared_deadline(self):
+        """A final API call completing late must not silently extend the budget."""
+        for delayed_read in ("run", "gate"):
+            self.now = 0
+
+            def read_run(_path):
+                if delayed_read == "run":
+                    self.now = rc.EXECUTING_RUN_WAIT_SECONDS + 1
+                return run(99, False)
+
+            def read_gate(_path, _field):
+                if delayed_read == "gate":
+                    self.now = rc.EXECUTING_RUN_WAIT_SECONDS + 1
+                return self.gh.jobs
+
+            with (
+                self.subTest(delayed_read=delayed_read),
+                patch.object(self.gh, "api", side_effect=read_run),
+                patch.object(self.gh, "pages", side_effect=read_gate),
+                self.assertRaisesRegex(rc.ReleaseError, "within 300 seconds"),
+            ):
+                self.wait(gate=True)
+        self.sleep.assert_not_called()
+        self.assertEqual(self.gh.writes, [])
+
+    def test_invalid_or_unsuccessful_gate_is_never_polled_into_success(self):
+        """Only absent or consistent nonterminal metadata may be retried."""
+        ready = self.gh.jobs[0]
+        snapshots = [
+            [{**ready, "conclusion": conclusion}]
+            for conclusion in (
+                "failure",
+                "skipped",
+                "cancelled",
+                "timed_out",
+                "action_required",
+                "neutral",
+                None,
+            )
+        ] + [
+            [ready, ready],
+            [{**ready, "head_sha": "b" * 40}],
+            [{**ready, "status": "queued", "head_sha": "b" * 40, "conclusion": None}],
+            [{**ready, "status": "unknown", "conclusion": None}],
+            [{**ready, "status": "queued", "conclusion": "failure"}],
+            [{**ready, "status": None, "conclusion": None}],
+        ]
+        for snapshot in snapshots:
+            with (
+                self.subTest(snapshot=snapshot),
+                patch.object(self.gh, "api", return_value=run(99, False)),
+                patch.object(self.gh, "pages", return_value=snapshot) as pages,
+                self.assertRaises(rc.ReleaseError),
+            ):
+                self.wait(gate=True)
+            pages.assert_called_once()
+        self.sleep.assert_not_called()
+        self.assertEqual(self.gh.writes, [])
+
+    def test_gate_wait_rechecks_execution_identity_before_each_snapshot(self):
+        """An old pending gate cannot authorize a rerun or a different source."""
+        for change in ({"run_attempt": 2}, {"head_sha": "b" * 40}, {"id": 100}):
+            with (
+                self.subTest(change=change),
+                patch.object(
+                    self.gh,
+                    "api",
+                    side_effect=[run(99, False), {**run(99, False), **change}],
+                ) as api,
+                patch.object(self.gh, "pages", return_value=[]) as pages,
+                self.assertRaises(rc.ReleaseError),
+            ):
+                self.wait(gate=True)
+            self.assertEqual(api.call_count, 2)
+            pages.assert_called_once()
+        self.assertEqual(self.sleep.call_count, 3)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_completed_run_never_waits_for_missing_or_pending_gate(self):
+        """The propagation exception belongs only to the executing publisher."""
+        for snapshot in (
+            [],
+            [{**self.gh.jobs[0], "status": "queued", "conclusion": None}],
+        ):
+            with (
+                self.subTest(snapshot=snapshot),
+                patch.object(self.gh, "pages", return_value=snapshot),
+                self.assertRaises(rc.ReleaseError),
+            ):
+                rc.validate_run(self.gh, run(), self.gh.info, SHA, 1, completed=True)
+        self.sleep.assert_not_called()
+
+    def test_duplicate_gate_on_later_page_is_not_a_propagation_delay(self):
+        """Every page participates in the uniqueness check."""
+        client = rc.GitHub(REPO)
+        with (
+            patch.object(
+                client,
+                "request",
+                return_value=json.dumps(
+                    [{"jobs": self.gh.jobs}, {"jobs": self.gh.jobs}]
+                ).encode(),
+            ),
+            self.assertRaisesRegex(rc.ReleaseError, "Exactly one"),
+        ):
+            rc.release_gate_ready(client, 99, SHA, 1, allow_pending=True)
+        self.sleep.assert_not_called()
 
     def test_transitional_states_require_a_fresh_in_progress_response(self):
         """Neither queued nor waiting itself grants permission to publish."""
