@@ -1,0 +1,43 @@
+name: Reviewed Auto Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  workflow_run:
+    workflows: [Quality gate, CodeQL, Auto Approve PRs]
+    types: [completed]
+  status:
+  check_run:
+    types: [completed]
+  check_suite:
+    types: [completed]
+  schedule:
+    - cron: '23,53 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  actions: read
+
+concurrency:
+  group: metadata-reviewed-merge
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    # Event metadata only wakes the evaluator; it independently reads live PRs.
+    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml@c3d39182d5a6a33dfff6c890e8f05f27957c3bf7 # main
+    with:
+      pr-author: 4alvit,californiantiramisu,dependabot[bot],renovate[bot]
+      merge-method: squash
+      reviewed-merge: true
+      reviewed-single-pass: true
+      allow-dependabot-actions-review: true
+      allow-owned-bot-actions-review: true
+      required-status-checks: CI gate
+    secrets:
+      BOT_PAT: ${{ secrets.BOT_PAT }}
