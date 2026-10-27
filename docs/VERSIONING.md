@@ -113,9 +113,12 @@ the ledger file from an existing state branch fails closed.
 Deleting the entire branch is different: the allocator can mistake it for a
 repository that has never allocated a version and initialize a new ledger.
 Existing tags do not recover all reserved build numbers or the publication
-floor. If the branch is lost, pause release allocation and restore the original
-branch from a verified commit or backup before resuming. Do not reset counters
-or discard reservations from failed runs to make the branch look current.
+floor. If the branch is lost, pause release allocation and restore the most
+recent complete ledger from a trusted commit or backup. Before resuming,
+confirm that its counter, publication floor and plans preserve every previously
+issued reservation and publication; an older valid snapshot is insufficient.
+If completeness cannot be established, keep allocation paused. Do not reset
+counters or discard reservations from failed runs to make the branch look current.
 
 ## Automatic nightly publication reuse
 
