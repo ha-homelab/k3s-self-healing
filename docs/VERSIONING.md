@@ -80,11 +80,20 @@ src-tauri/Cargo.lock text eol=lf
 
 ## Durable allocation and retries
 
-The repository's dedicated `release-version-state` branch contains only the
-allocator's logical state file, `release-version-state.json` (the branch starts
-at the first source commit). GitHub's Contents API blob-SHA compare-and-swap
-serializes allocations. Conflicts fail; they never silently rename a compiled
-candidate. This metadata branch is not a release/deployment trigger.
+The repository's dedicated `release-version-state` branch stores the allocator's
+logical state in `release-version-state.json`. It starts at the source commit
+used for the first allocation, so its tree also contains that commit's files;
+the allocator changes only the JSON ledger. GitHub's Contents API blob-SHA
+compare-and-swap serializes allocations. Conflicts fail; they never silently
+rename a compiled candidate. This metadata branch is not a release/deployment
+trigger.
+
+Keep this branch separate from ordinary development-branch cleanup. It is
+expected to appear behind the default branch: the inherited source tree is not
+an unfinished implementation. Do not open a pull request to merge it, update it
+from `main`, rebase it, or delete it after a release. The release workflow reads
+and writes the ledger on this exact branch; copying its file into `main` does
+not replace that state. Exclude it from stale-branch deletion automation.
 
 A reservation is keyed by Actions run ID and bound to the source, policy, channel,
 base, and accepted RC when applicable. Rerunning that run reuses the plan; a new
@@ -100,6 +109,13 @@ publishable again. A failed publication consumes the number and needs a new run;
 if it already created the stable tag, that immutable tag also prevents a same-base
 retry. Investigate the partial publication before preparing a new base. Removing
 the ledger file from an existing state branch fails closed.
+
+Deleting the entire branch is different: the allocator can mistake it for a
+repository that has never allocated a version and initialize a new ledger.
+Existing tags do not recover all reserved build numbers or the publication
+floor. If the branch is lost, pause release allocation and restore the original
+branch from a verified commit or backup before resuming. Do not reset counters
+or discard reservations from failed runs to make the branch look current.
 
 ## Automatic nightly publication reuse
 
