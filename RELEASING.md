@@ -17,6 +17,10 @@ Changes use short-lived branches and reviewed pull requests into
 there is no separate permanent beta, RC or release branch. Branch/tag pushes do
 not publish stable releases. Every repository versions and releases independently.
 
+When present, `release-version-state` is a persistent allocation ledger. Retain
+it separately from development branches; never merge, rebase or reset it. See
+[ledger retention and recovery](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/VERSIONING.md#durable-allocation-and-retries).
+
 The committed base version comes from `SOURCE_VERSION`. A release preparation PR
 updates that version and any required native/package companion versions together.
 Version numbers are explicit; a commit message does not automatically select one.
