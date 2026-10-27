@@ -36,7 +36,7 @@ class MetadataAutomationTests(unittest.TestCase):
             "github.event.pull_request.head.repo.full_name == github.repository",
             "github.event.pull_request.base.ref == github.event.repository.default_branch",
             "contains(fromJSON('[\"4alvit\",\"californiantiramisu\",\"dependabot[bot]\",\"renovate[bot]\"]'), github.event.pull_request.user.login)",
-            "contains(github.event.pull_request.labels.*.name, 'auto-approve')",
+            "(contains(github.event.pull_request.labels.*.name, 'auto-approve') || contains(github.event.pull_request.labels.*.name, 'automerge'))",
             "!github.event.pull_request.draft",
         ])
 
