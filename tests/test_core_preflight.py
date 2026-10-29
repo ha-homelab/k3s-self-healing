@@ -1,4 +1,5 @@
 """Disposable config copy preserves internal aliases without reading their targets."""
+import ast
 import importlib.util
 import json
 import os
@@ -7,6 +8,8 @@ import tempfile
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,10 @@ class ConfigurationCopyTest(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.source = self.root / 'source';self.source.mkdir()
         self.target = self.root / 'copy'
+        disk = SimpleNamespace(total=64 * 1024**3, free=32 * 1024**3)
+        mocked_disk = patch.object(preflight.shutil, 'disk_usage', return_value=disk)
+        self.disk_usage = mocked_disk.start()
+        self.addCleanup(mocked_disk.stop)
 
     def write(self, name, content='test'):
         path = self.source / name;path.parent.mkdir(exist_ok=True, parents=True);path.write_text(content)
@@ -93,6 +100,100 @@ class ConfigurationCopyTest(unittest.TestCase):
         self.assertFalse((self.target / 'backups').exists())
         self.assertEqual((self.target / 'packages/media/lights.yaml').read_text(), 'keep')
 
+    def test_schema_only_runtime_directories_do_not_consume_copy_budget(self):
+        excluded = ['.storage/home_floorplan_generated_assets',
+                    '.storage/home_floorplan_studio_assets',
+                    '.storage/home_floorplan/studio',
+                    '.home-studio-backups', '.home-studio-install-20261029',
+                    '.asterisk-telephony-backup-fixture', '.epg-channel-backup-fixture',
+                    '.epg-media-backup-fixture', '.ha-stale-retirement-fixture',
+                    '.recorder-quality-backup-fixture']
+        for name in excluded:
+            self.write(name + '/generated.bin', 'x' * 100)
+        self.write('configuration.yaml', 'keep')
+        report = self.copy(limit=4)
+        self.assertEqual(report['configuration_bytes'], 4)
+        self.assertEqual(report['files'], 1)
+        for name in excluded:
+            self.assertFalse((self.target / name).exists(), name)
+
+    def test_schema_runtime_filter_keeps_registries_neighbors_and_component_assets(self):
+        kept = ['.storage/core.config_entries', '.storage/core.entity_registry',
+                'configuration.yaml', 'secrets.yaml', 'packages/lighting.yaml',
+                '.storage/home_floorplan_generated_studio', '.storage/home_floorplan_studio',
+                '.storage/home_floorplan_map', '.storage/home_floorplan_curtains',
+                '.storage/home_floorplan_access_sessions',
+                '.storage/home_floorplan_generated_assets.backup/metadata.json',
+                '.storage/home_floorplan/studio_settings.json',
+                '.home-studio-backups-old/metadata.json',
+                '.home-studio-installer/metadata.json',
+                'packages/.home-studio-install-example/automation.yaml',
+                'custom_components/home_floorplan/__init__.py',
+                'custom_components/home_floorplan/runtime/site.json',
+                'custom_components/home_floorplan/runtime/private_site_config.json',
+                'custom_components/home_floorplan/runtime/assets/model.glb',
+                'custom_components/home_floorplan/assets/model.glb']
+        for name in kept:
+            self.write(name, 'keep')
+        report = self.copy()
+        self.assertEqual(report['files'], len(kept))
+        for name in kept:
+            self.assertEqual((self.target / name).read_text(), 'keep', name)
+
+    def test_runtime_named_regular_files_are_not_excluded(self):
+        kept = ['.storage/home_floorplan_generated_assets',
+                '.storage/home_floorplan_studio_assets', '.storage/home_floorplan/studio',
+                '.home-studio-backups', '.home-studio-install-store',
+                '.asterisk-telephony-backup-store', '.epg-channel-backup-store',
+                '.epg-media-backup-store', '.ha-stale-retirement-store',
+                '.recorder-quality-backup-store']
+        for name in kept:
+            self.write(name, 'store')
+        self.assertEqual(self.copy()['files'], len(kept))
+        for name in kept:
+            self.assertEqual((self.target / name).read_text(), 'store', name)
+
+    def test_maintenance_prefixes_keep_nested_adjacent_and_aliased_inputs(self):
+        prefixes = ['.asterisk-telephony-backup-', '.epg-channel-backup-',
+                    '.epg-media-backup-', '.ha-stale-retirement-', '.recorder-quality-backup-']
+        self.write('required/config.yaml', 'keep')
+        for prefix in prefixes:
+            self.write('packages/' + prefix + 'fixture/config.yaml', 'keep')
+            self.write(prefix.rstrip('-') + '_settings/config.yaml', 'keep')
+            self.link(prefix + 'alias', '/config/required')
+        self.copy()
+        for prefix in prefixes:
+            self.assertEqual((self.target / ('packages/' + prefix + 'fixture/config.yaml')).read_text(), 'keep')
+            self.assertEqual((self.target / (prefix.rstrip('-') + '_settings/config.yaml')).read_text(), 'keep')
+            self.assertEqual((self.target / (prefix + 'alias/config.yaml')).read_text(), 'keep')
+
+    def test_maintenance_named_external_alias_is_still_refused(self):
+        self.link('.epg-channel-backup-alias', '/outside')
+        with self.assertRaisesRegex(RuntimeError, 'external'):
+            self.copy()
+
+    def test_runtime_named_internal_alias_keeps_normal_confinement(self):
+        self.write('required/metadata.json', 'keep')
+        name = '.storage/home_floorplan_generated_assets'
+        self.link(name, '/config/required')
+        self.assertEqual(self.copy()['symlinks'], 1)
+        self.assertEqual((self.target / name).resolve(), self.target / 'required')
+        self.assertEqual((self.target / name / 'metadata.json').read_text(), 'keep')
+
+    def test_runtime_named_external_alias_is_still_refused(self):
+        self.link('.storage/home_floorplan_generated_assets', '/outside')
+        with self.assertRaisesRegex(RuntimeError, 'external'):
+            self.copy()
+
+    def test_alias_to_omitted_runtime_stays_dangling_inside_copy(self):
+        self.write('.storage/home_floorplan_studio_assets/model.glb', 'runtime')
+        self.link('runtime_alias', '/config/.storage/home_floorplan_studio_assets')
+        self.copy()
+        self.assertTrue((self.target / 'runtime_alias').is_symlink())
+        self.assertEqual((self.target / 'runtime_alias').resolve(),
+                         self.target / '.storage/home_floorplan_studio_assets')
+        self.assertFalse((self.target / 'runtime_alias').exists())
+
     def test_special_files_are_refused_without_opening(self):
         os.mkfifo(self.source / 'fifo')
         with self.assertRaisesRegex(RuntimeError, 'special file'):
@@ -103,6 +204,89 @@ class ConfigurationCopyTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'byte budget'):
             self.copy(limit=4)
         self.assertEqual(path.read_text(), '12345')
+        self.assertFalse(self.target.exists())
+
+    def test_capacity_counts_allocated_files_directories_and_links_only_once(self):
+        self.write('required/file.yaml', 'x' * 4097)
+        self.link('alias', '/config/required/file.yaml')
+        self.write('.home-studio-backups/large.bin', 'x' * 10000)
+        with patch.object(preflight, 'wait_for_copy_capacity') as capacity, \
+                patch.object(preflight.os, 'statvfs', return_value=SimpleNamespace(f_frsize=4096)):
+            self.copy()
+        # Root + directory + file entry + two data blocks + link.
+        self.assertEqual(capacity.call_args_list[0].args, (self.target.parent, 6 * 4096))
+
+    def test_capacity_failure_happens_before_destination_creation(self):
+        self.write('configuration.yaml', 'keep')
+        self.disk_usage.return_value.free = 0
+        with patch.object(preflight.time, 'monotonic', side_effect=[0, 300]), \
+                patch.object(preflight.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'free space'):
+                self.copy()
+        sleep.assert_not_called()
+        self.assertFalse(self.target.exists())
+
+    def test_capacity_recovery_waits_without_creating_payload(self):
+        self.write('configuration.yaml', 'keep')
+        calls = []
+
+        def disk_usage(_path):
+            calls.append(self.target.exists())
+            return SimpleNamespace(total=64 * 1024**3,
+                                   free=0 if len(calls) == 1 else 32 * 1024**3)
+
+        self.disk_usage.side_effect = disk_usage
+        with patch.object(preflight.time, 'monotonic', return_value=0), \
+                patch.object(preflight.time, 'sleep') as sleep:
+            self.copy()
+        sleep.assert_called_once_with(5)
+        self.assertEqual(calls[:2], [False, False])
+        self.assertEqual((self.target / 'configuration.yaml').read_text(), 'keep')
+
+    def test_capacity_wait_is_bounded_to_300_seconds(self):
+        self.disk_usage.return_value.free = 0
+        elapsed = [0]
+
+        def sleep(seconds):
+            elapsed[0] += seconds
+
+        with patch.object(preflight.time, 'monotonic', side_effect=lambda: elapsed[0]), \
+                patch.object(preflight.time, 'sleep', side_effect=sleep), \
+                patch('builtins.print'):
+            with self.assertRaisesRegex(RuntimeError, 'free space'):
+                self.copy()
+        self.assertEqual(elapsed[0], 300)
+        self.assertFalse(self.target.exists())
+
+    def test_concurrent_space_loss_stops_before_writing_payload(self):
+        self.write('configuration.yaml', 'keep')
+        self.disk_usage.side_effect = [SimpleNamespace(total=64 * 1024**3, free=32 * 1024**3),
+                                       SimpleNamespace(total=64 * 1024**3, free=0)]
+        with self.assertRaisesRegex(RuntimeError, 'free space'):
+            self.copy()
+        self.assertFalse((self.target / 'configuration.yaml').exists())
+        self.assertEqual((self.source / 'configuration.yaml').read_text(), 'keep')
+
+    def test_source_growth_after_measurement_still_enforces_byte_cap(self):
+        source = self.write('configuration.yaml', 'keep')
+
+        def capacity(_path, _bytes, wait_seconds=300):
+            if wait_seconds:
+                source.write_text('too large')
+
+        with patch.object(preflight, 'wait_for_copy_capacity', side_effect=capacity):
+            with self.assertRaisesRegex(RuntimeError, 'byte budget'):
+                self.copy(limit=4)
+        self.assertFalse((self.target / 'configuration.yaml').exists())
+
+    def test_copy_reserve_matches_native_backup_policy(self):
+        source = ast.parse((ROOT / 'native_backup/runner.py').read_text())
+        function = next(item for item in source.body
+                        if isinstance(item, ast.FunctionDef) and item.name == 'reserve_bytes')
+        namespace = {'GIB': 1024**3}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), '<reserve policy>', 'exec'), namespace)
+        for total in [0, 40 * 1024**3, 64 * 1024**3, 1024**4, 64 * 1024**3 + 1]:
+            self.assertEqual(preflight.copy_reserve_bytes(total), namespace['reserve_bytes'](total))
 
     def test_existing_destination_is_never_overwritten(self):
         self.target.mkdir();(self.target / 'keep').write_text('keep')
