@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.11] - 2026-10-29
+
+### Updated
+
+- Pin the native recorder export's official MySQL client to 8.4.13 for ARM64
+  and AMD64. This LTS patch includes `mysqldump` metadata-validation fixes
+  ([upstream release notes](https://dev.mysql.com/doc/relnotes/mysql/8.4/en/news-8-4-13.html)).
+- Verify architecture selection without changing the export pipeline, HA worker
+  images, security settings, format, limits, or retained backups.
+
+### Upgrade
+
+Adopt the verified source release in the private deployment, preserve its HA
+image pins and storage settings, and run the native backup installer only after
+all existing backup Jobs have finished. Running Jobs keep their original image.
+This updates the client used by future exports; it does not upgrade the database
+server or rewrite existing exports. Qualify the exact image and available disk
+space before installation. Keep the previous accepted source for rollback.
+
 ## [0.1.10] - 2026-10-29
 
 ### Fixed

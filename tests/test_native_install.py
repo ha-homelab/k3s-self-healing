@@ -124,7 +124,30 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(pod['initContainers'][0]['image'], self.image)
         self.assertEqual(pod['containers'][0]['image'], self.image)
         self.assertEqual(pod['initContainers'][1]['image'],
-                         'mysql@sha256:64a9d35fe6fed01159499be26c3279ac5ee16006c2ebb1f480d634bd5c61a053')
+                         'mysql@sha256:8ab2115abe8ca3d2745962f4e75f2f86fb8182ae19908773cd4cce811f3c106e')
+
+    def test_amd64_mysql_client_preserves_ha_workers_and_export_command(self):
+        self.node['status']['nodeInfo']['architecture'] = 'amd64'
+        self.install()
+        applied = next(objects for action, objects in self.calls if action == 'apply')
+        cron = next(obj for obj in applied if obj['kind'] == 'CronJob')
+        pod = cron['spec']['jobTemplate']['spec']['template']['spec']
+        mysql = next(c for c in pod['initContainers'] if c['name'] == 'mysql-dump')
+        self.assertEqual(mysql['image'],
+                         'mysql@sha256:5cf1e1293ea42e077e6a22114e6773b9aae3bb8f9933a2acd5a9721518ff8f5b')
+        template = next(yaml.safe_load_all((ROOT / 'native_backup/cronjob.yaml').read_text()))
+        template_pod = template['spec']['jobTemplate']['spec']['template']['spec']
+        template_mysql = next(c for c in template_pod['initContainers'] if c['name'] == 'mysql-dump')
+        self.assertEqual(mysql['command'], template_mysql['command'])
+        self.assertEqual(mysql['securityContext'], template_mysql['securityContext'])
+        self.assertEqual(pod['initContainers'][0]['image'], self.image)
+        self.assertEqual(pod['containers'][0]['image'], self.image)
+
+    def test_unsupported_mysql_architecture_fails_before_any_mutation(self):
+        self.node['status']['nodeInfo']['architecture'] = 'unsupported'
+        with self.assertRaises(KeyError):
+            self.install()
+        self.assert_no_mutation()
 
     def test_admission_rejection_does_not_initialize_directory_or_replace_code(self):
         self.argv += ['--timezone', 'Invalid/Zone']
