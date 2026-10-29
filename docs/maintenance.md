@@ -81,6 +81,42 @@ failure. Do not clear it merely to force a retry. After a database migration,
 restore from the verified matching backup rather than downgrade the image over
 the migrated database.
 
+### Disposable Core configuration check
+
+The preflight Job runs Home Assistant's schema-only `check_config` against a
+private disposable copy. It keeps configuration YAML, secrets, includes, entity
+and integration registries, and all custom-component code and packaged assets.
+It does not start the complete Home Studio application.
+
+Only these reviewed runtime **directories** are omitted from that copy:
+`.storage/home_floorplan_generated_assets`,
+`.storage/home_floorplan_studio_assets`, `.storage/home_floorplan/studio`,
+`.home-studio-backups`, and root directories beginning `.home-studio-install-`.
+These contain generated visualization data or installer rollback/staging copies,
+not schema inputs. The same root-only rule omits directories beginning
+`.asterisk-telephony-backup-`, `.epg-channel-backup-`, `.epg-media-backup-`,
+`.ha-stale-retirement-`, or `.recorder-quality-backup-`. These are installer or
+maintenance rollback copies, with duplicate configuration and private operation
+receipts; they are not the active integration trees. This is an explicit list,
+not a generic hidden-directory or backup-name filter.
+
+Regular Store files at matching names are still copied;
+symlinks still undergo the normal confinement checks. Similarly named adjacent
+paths and the complete `custom_components/home_floorplan` tree remain included.
+Do not reuse this omission policy for a full startup check or a backup.
+
+Before creating the disposable directory, preflight measures the same selected
+files and rejects configurations above the existing 3 GiB logical byte cap. It
+allows for block-rounded file data, entry metadata and 64 MiB of temporary work,
+while retaining the native-backup reserve: at least 3 GiB and 1 GiB above the
+assumed 5% node filesystem eviction threshold. If that space is unavailable, it
+waits up to 300 seconds using read-only checks, then stops with required and
+available byte counts. It neither removes files nor lowers the reserve. Capacity
+is checked again during copying, and growth still obeys the byte cap. This limits
+copy-induced exhaustion; it cannot reserve disk against other processes. Image
+pulls happen before this check and need their own operator capacity review. The
+64 MiB allowance is not a hard limit on later validation subprocess writes.
+
 ### Private approval receipts
 
 Before changing either source manifest, the updater saves the six-field approval

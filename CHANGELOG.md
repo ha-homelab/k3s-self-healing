@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.10] - 2026-10-29
+
+### Fixed
+
+- Omit only reviewed Home Studio generated assets and installer/maintenance rollback directories
+  from the Core schema-check copy. Preserve Store files, integration code,
+  configuration includes, and existing symlink confinement.
+- Measure the selected configuration before copying. Reject the existing byte
+  cap early and allow up to five minutes for sufficient temporary disk capacity,
+  retaining the native-backup reserve and checking space during copying.
+
+### Upgrade
+
+Adopt this source release through the private deployment's verified dependency
+workflow before installing the updated Core preflight code. These exclusions
+apply only to schema validation, never full startup or backup. Publishing the
+source does not update a running worker or change backup retention.
+
+### Security
+
+Configuration-copy, report-validation, approval and release gates remain in
+place. The capacity wait only observes free space; it does not delete data or
+relax the reserve. It cannot prevent unrelated processes from consuming disk.
+
 ## [0.1.9] - 2026-10-20
 
 ### Fixed

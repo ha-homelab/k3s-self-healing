@@ -3,11 +3,27 @@ from pathlib import Path
 import json
 import os
 import stat
+import shutil
+import time
 import subprocess
 import sys
 
 
 ROOT_EXCLUDED = {"backups", "recorder_backup", "tmp_backups", ".git", "__pycache__", "media", "tts"}
+SCHEMA_ONLY_RUNTIME_DIRECTORIES = {
+    ".storage/home_floorplan_generated_assets",
+    ".storage/home_floorplan_studio_assets",
+    ".storage/home_floorplan/studio",
+    ".home-studio-backups",
+}
+SCHEMA_ONLY_ROOT_DIRECTORY_PREFIXES = (
+    ".home-studio-install-",
+    ".asterisk-telephony-backup-",
+    ".epg-channel-backup-",
+    ".epg-media-backup-",
+    ".ha-stale-retirement-",
+    ".recorder-quality-backup-",
+)
 PROTECTED_PLACEHOLDER_ROOTS = ("/config", "/app", "/work", "/ha-source", "/usr", "/etc", "/proc", "/sys", "/dev", "/bin", "/sbin", "/lib", "/lib64", "/root", "/tmp", "/var", "/run", "/opt")
 CHECK_CONFIG_BOOTSTRAP = (
     "import logging,runpy,sys; "
@@ -15,6 +31,20 @@ CHECK_CONFIG_BOOTSTRAP = (
     "sys.argv=sys.argv[1:]; "
     "runpy.run_module('homeassistant',run_name='__main__')"
 )
+
+
+def schema_only_runtime_directory(relative, mode):
+    """Omit generated visualization/rollback directories only for check_config.
+
+    A full Home Studio startup needs its runtime assets. Do not reuse this policy
+    for startup canaries or backups. Store files, component code, and aliases
+    still take the ordinary copy and confinement paths even at matching names.
+    """
+    relative = Path(relative)
+    return stat.S_ISDIR(mode) and (
+        relative.as_posix() in SCHEMA_ONLY_RUNTIME_DIRECTORIES
+        or (len(relative.parts) == 1 and relative.name.startswith(SCHEMA_ONLY_ROOT_DIRECTORY_PREFIXES))
+    )
 
 
 def validate_placeholder_directories(directories, live_mounts):
@@ -67,6 +97,29 @@ def prepare_placeholder_directories(specifications, container_root=Path("/")):
     return len(checked)
 
 
+def copy_reserve_bytes(total):
+    """Match native_backup.runner.reserve_bytes without importing its worker."""
+    mib = 1024**2
+    threshold = (total + 20 * mib - 1) // (20 * mib) * mib
+    return max(3 * 1024**3, threshold + 1024**3)
+
+
+def wait_for_copy_capacity(path, payload_bytes, wait_seconds=300):
+    """Wait only for capacity; never delete data or reduce the host reserve."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        disk = shutil.disk_usage(path)
+        required = copy_reserve_bytes(disk.total) + payload_bytes + 64 * 1024**2
+        if disk.free >= required:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"Insufficient free space for preflight copy and host reserve: required {required} bytes, available {disk.free} bytes")
+        print(json.dumps({"preflight_stage": "waiting_for_copy_capacity",
+                          "required_bytes": required, "free_bytes": disk.free}), flush=True)
+        time.sleep(min(5, remaining))
+
+
 def copy_configuration(source, target, limit=3 * 1024**3):
     """Copy regular files, then recreate only aliases confined to the copy.
 
@@ -78,15 +131,16 @@ def copy_configuration(source, target, limit=3 * 1024**3):
     source, target = Path(source).absolute(), Path(target).absolute()
     if target.exists() or target.is_symlink() or target.resolve().is_relative_to(source.resolve()):
         raise RuntimeError("Preflight copy requires a new destination outside the source")
-    target.mkdir(mode=0o700)
     total, files = 0, 0
+    allocation_unit = max(4096, os.statvfs(target.parent).f_frsize)
+    allocated = allocation_unit  # The new configuration root directory.
     links = {}
 
     def identity(item):
         return (item.st_dev, item.st_ino, item.st_mode, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
 
-    def visit(directory, relative):
-        nonlocal total, files
+    def visit(directory, relative, copying):
+        nonlocal total, files, allocated
         with os.scandir(directory) as entries:
             names = sorted(entry.name for entry in entries)
         for name in names:
@@ -95,7 +149,11 @@ def copy_configuration(source, target, limit=3 * 1024**3):
             child = relative / name
             destination = target / child
             before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if schema_only_runtime_directory(child, before.st_mode):
+                continue
             if stat.S_ISLNK(before.st_mode):
+                if not copying:
+                    allocated += allocation_unit
                 links[child.as_posix()] = os.readlink(name, dir_fd=directory)
                 if identity(before) != identity(os.stat(name, dir_fd=directory, follow_symlinks=False)):
                     raise RuntimeError("Configuration link changed during preflight copy")
@@ -104,23 +162,34 @@ def copy_configuration(source, target, limit=3 * 1024**3):
                 try:
                     if identity(before) != identity(os.fstat(descriptor)):
                         raise RuntimeError("Configuration directory changed during preflight copy")
-                    destination.mkdir(mode=0o700)
-                    visit(descriptor, child)
+                    if copying:
+                        wait_for_copy_capacity(target.parent, allocation_unit, wait_seconds=0)
+                        destination.mkdir(mode=0o700)
+                    else:
+                        allocated += allocation_unit
+                    visit(descriptor, child, copying)
                 finally:
                     os.close(descriptor)
             elif stat.S_ISREG(before.st_mode):
                 if total + before.st_size > limit:
                     raise RuntimeError("Configuration copy exceeds its validation byte budget")
+                if not copying:
+                    total += before.st_size
+                    files += 1
+                    allocated += allocation_unit + ((before.st_size + allocation_unit - 1) // allocation_unit) * allocation_unit
+                    continue
                 descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
                 with os.fdopen(descriptor, "rb") as original:
                     if identity(before) != identity(os.fstat(original.fileno())):
                         raise RuntimeError("Configuration file changed during preflight copy")
+                    wait_for_copy_capacity(target.parent, allocation_unit, wait_seconds=0)
                     with destination.open("xb") as copied:
                         destination.chmod(0o700 if before.st_mode & stat.S_IXUSR else 0o600)
                         while block := original.read(1024**2):
                             total += len(block)
                             if total > limit:
                                 raise RuntimeError("Configuration copy exceeds its validation byte budget")
+                            wait_for_copy_capacity(target.parent, ((len(block) + allocation_unit - 1) // allocation_unit) * allocation_unit, wait_seconds=0)
                             copied.write(block)
                     if identity(before) != identity(os.fstat(original.fileno())):
                         raise RuntimeError("Configuration file changed during preflight copy")
@@ -130,7 +199,13 @@ def copy_configuration(source, target, limit=3 * 1024**3):
 
     root = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        visit(root, Path())
+        # Both passes use the same fd-based traversal and exact selection policy.
+        # Admission happens before the destination or any payload file is created.
+        visit(root, Path(), copying=False)
+        wait_for_copy_capacity(target.parent, allocated)
+        total, files, links = 0, 0, {}
+        target.mkdir(mode=0o700)
+        visit(root, Path(), copying=True)
     finally:
         os.close(root)
 
@@ -174,6 +249,7 @@ def copy_configuration(source, target, limit=3 * 1024**3):
     resolved_links = {name: resolve_link(name) for name in links}
     for name, destination in resolved_links.items():
         alias = target / name
+        wait_for_copy_capacity(target.parent, allocation_unit, wait_seconds=0)
         alias.symlink_to(os.path.relpath(destination, alias.parent))
     return {"configuration_bytes": total, "files": files, "symlinks": len(links)}
 
