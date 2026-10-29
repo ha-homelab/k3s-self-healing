@@ -19,6 +19,13 @@ This updates the client used by future exports; it does not upgrade the database
 server or rewrite existing exports. Qualify the exact image and available disk
 space before installation. Keep the previous accepted source for rollback.
 
+### Security
+
+The official client update includes upstream validation fixes for server-supplied
+metadata. Per-architecture digests remain immutable, and the read-only container,
+private credential handoff, export size limit, and previous-export retention are
+unchanged. Qualify the new client before allowing future backup Jobs to use it.
+
 ## [0.1.10] - 2026-10-29
 
 ### Fixed
