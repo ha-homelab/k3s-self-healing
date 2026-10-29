@@ -155,8 +155,8 @@ def main():
     pod = template['spec']['jobTemplate']['spec']['template']['spec']
     node = json.loads(subprocess.check_output(base + ['get', 'node', args.node, '-o', 'json'], timeout=60))
     node_ip = next(x['address'] for x in node['status']['addresses'] if x['type'] == 'InternalIP')
-    clients = {'arm64': 'mysql@sha256:64a9d35fe6fed01159499be26c3279ac5ee16006c2ebb1f480d634bd5c61a053',
-               'amd64': 'mysql@sha256:f015b98a954d6bb92c370d93f354b85f4bcea15642d9fb2975f841a00d400b65'}
+    clients = {'arm64': 'mysql@sha256:8ab2115abe8ca3d2745962f4e75f2f86fb8182ae19908773cd4cce811f3c106e',
+               'amd64': 'mysql@sha256:5cf1e1293ea42e077e6a22114e6773b9aae3bb8f9933a2acd5a9721518ff8f5b'}
     client_image = clients[node['status']['nodeInfo']['architecture']]
     k = base + ['-n', args.namespace]
     ha_pod = json.loads(subprocess.check_output(k + ['get', 'pod', args.ha_pod, '-o', 'json'], timeout=60))

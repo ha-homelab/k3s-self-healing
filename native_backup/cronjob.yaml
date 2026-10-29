@@ -52,8 +52,8 @@ spec:
                 - {name: tmp, mountPath: /tmp}
                 - {name: code, mountPath: /code, readOnly: true}
             - name: mysql-dump
-              # Official MySQL 8.4 LTS arm64 client, pinned to the inspected digest.
-              image: mysql@sha256:64a9d35fe6fed01159499be26c3279ac5ee16006c2ebb1f480d634bd5c61a053
+              # Official MySQL 8.4.13 LTS arm64 client, pinned to the inspected digest.
+              image: mysql@sha256:8ab2115abe8ca3d2745962f4e75f2f86fb8182ae19908773cd4cce811f3c106e
               command:
                 - /bin/bash
                 - -ec
