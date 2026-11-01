@@ -38,9 +38,18 @@ def validate_local_capture(value, *, staged_capture):
     return dict(value)
 
 
+def validate_sqlite_validation_mirror(value, *, local_capture=None):
+    if value is None:
+        return None
+    if local_capture is not None:
+        raise ValueError('SQLite validation mirror and local raw capture cannot share a component')
+    return validate_local_capture(value, staged_capture=True)
+
+
 def configure_local_capture(objects):
     """Add one explicit disk emptyDir only when the rendered runtime opts in."""
     options = []
+    mirrors = []
     for obj in objects:
         if obj.get('kind') != 'ConfigMap' or 'config.json' not in obj.get('data', {}):
             continue
@@ -50,12 +59,12 @@ def configure_local_capture(objects):
                                             staged_capture=item.get('staged_capture', False))
             if option is not None:
                 options.append(option)
-    if not options:
+            mirror = validate_sqlite_validation_mirror(item.get('sqlite_validation_mirror'),
+                                                       local_capture=option)
+            if mirror is not None:
+                mirrors.append(mirror)
+    if not options and not mirrors:
         return objects
-    directories = {option['directory'] for option in options}
-    if len(directories) != 1:
-        raise ValueError('One recovery Job must use one local_capture directory')
-    directory = directories.pop()
     matches = [obj for obj in objects if obj.get('kind') == 'CronJob'
                and obj.get('metadata', {}).get('name') == 'ha-disaster-recovery']
     if len(matches) != 1:
@@ -65,29 +74,39 @@ def configure_local_capture(objects):
     if len(containers) != 1:
         raise ValueError('local_capture requires one backup container')
     container = containers[0]
-    maximum = max(option['max_bytes'] for option in options)
-    volume = {'name': 'capture-scratch', 'emptyDir': {'sizeLimit': str(maximum + RENDER_OVERHEAD)}}
-    mount = {'name': 'capture-scratch', 'mountPath': directory}
     volumes = pod.setdefault('volumes', [])
     mounts = container.setdefault('volumeMounts', [])
-    for existing in volumes:
-        if existing['name'] == volume['name'] and existing != volume:
-            raise ValueError('local_capture volume conflicts with existing storage')
-    for existing in mounts:
-        if existing == mount:
+    for group, name in ((options, 'capture-scratch'), (mirrors, 'sqlite-validation-scratch')):
+        if not group:
             continue
-        path, target = PurePosixPath(existing['mountPath']), PurePosixPath(directory)
-        if existing['name'] == mount['name'] or path.is_relative_to(target) or target.is_relative_to(path):
-            raise ValueError('local_capture mount overlaps existing storage')
+        directories = {option['directory'] for option in group}
+        if len(directories) != 1:
+            raise ValueError('One recovery Job must use one local_capture directory per role')
+        directory = directories.pop()
+        maximum = max(option['max_bytes'] for option in group)
+        volume = {'name': name, 'emptyDir': {'sizeLimit': str(maximum + RENDER_OVERHEAD)}}
+        mount = {'name': name, 'mountPath': directory}
+        for existing in volumes:
+            if existing['name'] == volume['name'] and existing != volume:
+                raise ValueError('local_capture volume conflicts with existing storage')
+        for existing in mounts:
+            if existing == mount:
+                continue
+            path, target = PurePosixPath(existing['mountPath']), PurePosixPath(directory)
+            if existing['name'] == mount['name'] or path.is_relative_to(target) or target.is_relative_to(path):
+                raise ValueError('local_capture mount overlaps existing storage')
+        if volume not in volumes:
+            volumes.append(volume)
+        if mount not in mounts:
+            mounts.append(mount)
+    # Components run serially and cannot enable both roles. Each context cleans
+    # its owned files before the next component, so this is the peak payload.
+    maximum = max(option['max_bytes'] for option in options + mirrors)
     for section, amount in (('requests', maximum), ('limits', maximum + RENDER_OVERHEAD)):
         values = container.setdefault('resources', {}).setdefault(section, {})
         if 'ephemeral-storage' in values and values['ephemeral-storage'] != str(amount):
             raise ValueError('local_capture conflicts with existing ephemeral-storage budget')
         values['ephemeral-storage'] = str(amount)
-    if volume not in volumes:
-        volumes.append(volume)
-    if mount not in mounts:
-        mounts.append(mount)
     return objects
 
 
@@ -212,11 +231,18 @@ class BoundedWriter:
 
 
 class LocalRaw:
-    def __init__(self, root, root_fd, child, child_fd, options, check_deadline, mount_identity):
+    def __init__(self, root, root_fd, child, child_fd, options, check_deadline, mount_identity,
+                 filename='archive.tar'):
         self.root, self.root_fd, self.child, self.child_fd = root, root_fd, child, child_fd
         self.options, self.check_deadline = options, check_deadline
         self.mount_identity = mount_identity
         self.file_identity = None
+        self.filename = filename
+
+    @property
+    def path(self):
+        self.check_identity()
+        return self.root / self.child / self.filename
 
     def check_identity(self):
         _check_directory_identity(self.root, self.root_fd)
@@ -227,7 +253,7 @@ class LocalRaw:
 
     def writer(self):
         self.check_identity()
-        descriptor = os.open('archive.tar', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        descriptor = os.open(self.filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o600, dir_fd=self.child_fd)
         self.file_identity = _identity(os.fstat(descriptor))
         handle = os.fdopen(descriptor, 'wb', buffering=0)
@@ -238,7 +264,7 @@ class LocalRaw:
         if mode != 'rb':
             raise ValueError('Local raw capture can only be reopened for reading')
         self.check_identity()
-        descriptor = os.open('archive.tar', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+        descriptor = os.open(self.filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                              dir_fd=self.child_fd)
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or _identity(metadata) != self.file_identity:
@@ -248,11 +274,29 @@ class LocalRaw:
 
     def unlink(self):
         self.check_identity()
-        os.unlink('archive.tar', dir_fd=self.child_fd)
+        os.unlink(self.filename, dir_fd=self.child_fd)
+        if self.filename == 'database.sqlite':
+            for suffix in ('-wal', '-shm', '-journal'):
+                try:
+                    os.unlink(self.filename + suffix, dir_fd=self.child_fd)
+                except FileNotFoundError:
+                    pass
 
 
 @contextmanager
 def local_raw_capture(options, source, destination, check_deadline):
+    with _local_file(options, source, destination, check_deadline, 'archive.tar') as result:
+        yield result
+
+
+@contextmanager
+def local_sqlite_mirror(options, source, destination, check_deadline):
+    with _local_file(options, source, destination, check_deadline, 'database.sqlite') as result:
+        yield result
+
+
+@contextmanager
+def _local_file(options, source, destination, check_deadline, filename):
     root = Path(options['directory'])
     root_fd = _open_directory(root)
     child_fd = None
@@ -303,16 +347,21 @@ def local_raw_capture(options, source, destination, check_deadline):
         child_fd = os.open(child, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
         if _identity(os.fstat(child_fd)) != child_identity:
             raise OSError('Local capture directory changed')
-        result = LocalRaw(root, root_fd, child, child_fd, options, check_deadline, dedicated)
+        result = LocalRaw(root, root_fd, child, child_fd, options, check_deadline, dedicated, filename)
         result.check_identity()
         yield result
     finally:
         try:
             if child_fd is not None:
                 try:
-                    os.unlink('archive.tar', dir_fd=child_fd)
-                except FileNotFoundError:
-                    pass
+                    names = [filename]
+                    if filename == 'database.sqlite':
+                        names += [filename + suffix for suffix in ('-wal', '-shm', '-journal')]
+                    for name in names:
+                        try:
+                            os.unlink(name, dir_fd=child_fd)
+                        except FileNotFoundError:
+                            pass
                 finally:
                     os.close(child_fd)
             if child_identity is not None:

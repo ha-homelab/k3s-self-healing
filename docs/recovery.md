@@ -99,8 +99,8 @@ retry/deadline limits are unchanged. This reduces NAS traffic during capture but
 does not guarantee a stable source or a particular capture duration.
 
 The renderer adds a separate disk-backed `emptyDir`, never a memory volume, to
-the recovery worker when an entry opts in. Entries in one Job must share one
-directory. The largest configured raw cap becomes its ephemeral-storage request;
+the recovery worker when an entry opts in. Raw-capture entries in one Job must share one
+directory. Without a SQLite validation mirror, the largest configured raw cap becomes its ephemeral-storage request;
 the cap plus 1 GiB becomes both the volume size limit and ephemeral-storage limit.
 The extra allowance also covers worker logs and writable-layer usage; review it
 against actual node capacity. No volume or resource changes are made without
@@ -156,6 +156,55 @@ The existing shared deadline and guarded fallback policies remain in force;
 this option never changes the source journal mode or checkpoints the source.
 Successful components list actually pinned databases in
 `sqlite_pinned_wal_snapshots`; that field is absent when none were pinned.
+
+When NAS page reads make SQLite output validation slow, a component may explicitly
+enable a bounded local validation mirror:
+
+```json
+{
+  "sqlite_validation_mirror": {
+    "directory": "/sqlite-mirror",
+    "max_bytes": 4294967296,
+    "minimum_free_bytes": 5368709120
+  }
+}
+```
+
+This option is independent of WAL pinning and tar staging, and is absent by
+default. It accepts exactly a canonical absolute directory and two positive
+integer byte limits. It cannot coexist with `local_capture` on the same
+component. The online SQLite backup still writes to private NAS scratch and
+releases any source read transaction immediately afterward. The worker makes
+that output standalone, closes it, then copies it sequentially to local disk.
+The complete existing `quick_check` runs read-only on the local file. Tar reads
+that same validated file, with identity/stat checks and a copy-digest comparison;
+the final gzip, CRC/layout/hash checks and exclusive publication remain on NAS.
+No source journal mode, scope, retry count or deadline changes. The guarded
+physical fallback paths retain their existing NAS validation; errors in mirror
+copying, validation or private-output normalization do not select those fallbacks.
+Actual mirrored databases are listed in `sqlite_validation_mirrors`.
+
+The renderer adds a distinct disk-backed `sqlite-validation-scratch` emptyDir.
+Each role has one configured directory and a volume limit of its largest cap
+plus 1 GiB. Components run serially and clean their local files before the next
+component. Because simultaneous local raw capture and a mirror are rejected,
+the container ephemeral-storage request is the largest cap across both roles;
+its limit adds 1 GiB. For raw cap 3 GiB and mirror cap 4 GiB in different
+components, that means a 4 GiB request and 5 GiB limit. Review actual node
+capacity and writable-layer/log overhead before applying the rendered change.
+
+Mirror storage uses the same disk identity, trusted-directory, no-symlink,
+source/destination overlap, hard byte cap and repeatedly checked free-floor
+rules as local raw capture. Its task-owned 0700 directory assumes other
+processes with the worker's UID or elevated privileges are trusted; the checks
+do not claim protection against an adversary with that access. It holds one
+database at a time; the complete NAS
+SQLite output also exists until that tar member has been written. Python
+exceptions, including KeyboardInterrupt, clean both scratch locations. Process
+termination or node loss
+can leave local files until Pod deletion, and space checks do not reserve capacity
+against other writers. This avoids NAS random reads during online-output
+validation, but adds a sequential copy and does not guarantee a completion time.
 
 ```sh
 python scripts/deploy-disaster-recovery.py --context YOUR_CONTEXT \
