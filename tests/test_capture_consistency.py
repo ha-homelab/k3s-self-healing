@@ -78,10 +78,16 @@ class CaptureConsistencyTests(unittest.TestCase):
                         result = original(*args, **kwargs)
                         calls += 1
                         target = self.root / "replacement" if atomic else source
+                        if not atomic:
+                            # Some filesystems update ctime on a coarse clock tick.
+                            time.sleep(0.02)
                         target.write_bytes(b"other")
                         os.utime(target, ns=(result[0].st_atime_ns, result[0].st_mtime_ns))
                         if atomic:
                             os.replace(target, source)
+                        current = source.stat()
+                        self.assertEqual(current.st_mtime_ns, result[0].st_mtime_ns)
+                        self.assertNotEqual(archive._signature(current), archive._signature(result[0]))
                         return result
 
                     with patch.object(archive, "_copy_regular", side_effect=replace_after_copy):
