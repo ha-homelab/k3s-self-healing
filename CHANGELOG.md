@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.15] - 2026-10-31
+
+### Added
+
+- Add opt-in local raw-tar capture with a hard byte cap and free-space floor.
+  Per-file and SQLite scratch, compression and final publication remain on NAS;
+  existing source consistency checks, retry counts and deadlines are retained.
+- Render a separate disk-backed emptyDir and explicit ephemeral-storage budgets
+  only for configured recovery entries. The default storage path is unchanged.
+
+### Upgrade
+
+Adopt the verified source release through the deployment repository's locked
+dependency workflow, including the new local_capture.py module in both worker
+source ConfigMaps. Review local disk capacity, private scratch permissions and
+the rendered volume/resource changes before explicitly enabling local capture.
+Measure capture duration before rollout. Existing running Jobs are unchanged.
+
+### Security
+
+Local raw captures contain the same sensitive data as NAS backups. The worker
+enforces owner-only scratch, rejects symlinks and source/destination overlap,
+and fails closed on capacity or identity errors. A dedicated Kubernetes emptyDir
+may be made private only after descriptor and mount verification. Space checks
+do not reserve capacity against other writers; interrupted Pods may retain raw
+data until deletion. No source exclusions or consistency checks are weakened.
+
 ## [0.1.14] - 2026-10-31
 
 ### Changed

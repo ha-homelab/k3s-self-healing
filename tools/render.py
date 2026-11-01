@@ -10,6 +10,8 @@ import yaml
 from site_profile import load_profile, materialize, recovery_objects
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from disaster_recovery.local_capture import configure_local_capture
 
 
 def main():
@@ -34,6 +36,7 @@ def main():
         objects = list(yaml.safe_load_all(subprocess.check_output(['kubectl', 'kustomize', str(ROOT / path)], text=True)))
         if args.component == 'recovery':
             objects = recovery_objects(objects, profile)
+            configure_local_capture(objects)
         else:
             objects = materialize(objects, profile)
         sys.stdout.write(yaml.safe_dump_all(objects, sort_keys=False))

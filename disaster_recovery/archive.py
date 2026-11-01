@@ -28,7 +28,7 @@ as evidence, not permission to extract outside the restore directory.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import errno
 import gzip
 import hashlib
@@ -44,6 +44,8 @@ import tarfile
 import tempfile
 import time
 from typing import BinaryIO, Iterator
+
+from .local_capture import local_raw_capture, validate_local_capture
 
 
 SQLITE_HEADER = b"SQLite format 3\x00"
@@ -648,6 +650,7 @@ def _create_archive_attempt(
     generated_image_caches: tuple[str, ...] = (),
     *,
     staged_capture: bool = False,
+    local_capture: dict | None = None,
 ) -> dict:
     parent = destination.parent
     metadata: dict = {
@@ -667,19 +670,25 @@ def _create_archive_attempt(
         capture_started = time.monotonic() if staged_capture else 0.0
         root_metadata = os.fstat(root_fd)
         entries = _entries(root_fd, exclusions, deadline, generated_image_caches)
-        with tempfile.TemporaryDirectory(prefix=".ha-dr-archive-", dir=parent) as scratch:
+        with ExitStack() as resources:
+            local = resources.enter_context(local_raw_capture(local_capture, source, destination,
+                                                               lambda: _check_deadline(deadline))) if local_capture else None
+            scratch = resources.enter_context(tempfile.TemporaryDirectory(prefix=".ha-dr-archive-", dir=parent))
             temporary = Path(scratch)
             draft = temporary / "archive.tar.gz"
             draft.touch(mode=0o600)
-            captured = temporary / "archive.tar" if staged_capture else draft
-            if staged_capture:
+            captured = local if local is not None else temporary / "archive.tar" if staged_capture else draft
+            if staged_capture and local is None:
                 captured.touch(mode=0o600)
             staged = temporary / "file"
             skipped_sidecars: set[str] = set()
             quiescent_guards: dict[str, tuple] = {}
             names = ["."]
             copy_options = {"memory_limit": STAGED_MEMORY_FILE_LIMIT} if staged_capture else {}
-            with tarfile.open(captured, "w" if staged_capture else "w:gz", format=tarfile.PAX_FORMAT) as archive:
+            raw_writer = resources.enter_context(local.writer()) if local is not None else None
+            with tarfile.open(None if local is not None else captured,
+                              "w" if staged_capture else "w:gz", fileobj=raw_writer,
+                              format=tarfile.PAX_FORMAT) as archive:
                 root_info = _tar_info(".", root_metadata)
                 root_info.type = tarfile.DIRTYPE
                 archive.addfile(root_info)
@@ -732,6 +741,10 @@ def _create_archive_attempt(
                         raise ArchiveError(f"Unsupported special source file: {relative}")
                     names.append(relative)
 
+            if raw_writer is not None:
+                raw_writer.close()
+                local.check_identity()
+            _check_deadline(deadline)
             current_entries = _entries(root_fd, exclusions, deadline, generated_image_caches)
             for relative, guard in quiescent_guards.items():
                 _require_quiescent_sqlite(root_fd, relative, guard)
@@ -780,11 +793,13 @@ def create_archive(
     generated_image_caches: list[str] | None = None,
     *,
     staged_capture: bool = False,
+    local_capture: dict | None = None,
 ) -> dict:
     """Atomically publish a gzip tar and return its checksum and capture metadata.
 
     Destination must not already exist or be inside source. Scratch files live
-    only in destination.parent (the NAS workspace). Publication uses a hard link
+    in destination.parent (the NAS workspace), except an explicitly configured
+    local raw tar. Publication uses a hard link
     on that same filesystem, so concurrent writers cannot replace an existing
     completed archive. Special files (devices, sockets, FIFOs) fail closed.
 
@@ -794,7 +809,7 @@ def create_archive(
     Ordinary files at most 8 MiB (64 MiB with staged capture) are staged in bounded
     memory to avoid a separate NAS write/read/unlink cycle. Only one payload is
     retained at a time; SQLite and larger files always use NAS scratch.
-    Opt-in staged capture writes an uncompressed tar on the same private scratch,
+    Opt-in staged capture writes an uncompressed tar on private scratch,
     checks the source, then compresses only those captured bytes. The single
     deadline still covers all phases. This requires space for both tar and gzip.
     Online SQLite snapshots exclude changing database content and sidecars from
@@ -807,6 +822,7 @@ def create_archive(
     the returned directories count includes that root.
     """
     validate_staged_capture(staged_capture)
+    local_capture = validate_local_capture(local_capture, staged_capture=staged_capture)
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
     deadline = time.monotonic() + timeout_seconds
@@ -830,7 +846,7 @@ def create_archive(
         _check_deadline(deadline)
         try:
             metadata = _create_archive_attempt(source, destination, exclusions, deadline, groups,
-                                               staged_capture=staged_capture)
+                                               staged_capture=staged_capture, local_capture=local_capture)
             metadata["attempts"] = attempt
             return metadata
         except (SourceChangedError, FileNotFoundError) as error:
