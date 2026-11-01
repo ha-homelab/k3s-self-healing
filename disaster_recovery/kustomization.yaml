@@ -13,6 +13,7 @@ configMapGenerator:
   files:
   - __init__.py
   - archive.py
+  - local_capture.py
   - restore.py
   - prepare.py
   - kubernetes.py
@@ -24,6 +25,7 @@ configMapGenerator:
   files:
   - __init__.py
   - archive.py
+  - local_capture.py
   - restore.py
   - runner.py
   - kubernetes.py

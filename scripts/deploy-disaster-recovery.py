@@ -9,6 +9,9 @@ import sys
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from disaster_recovery.local_capture import configure_local_capture
+
 sys.path.insert(0, str(ROOT / 'tools'))
 from site_profile import load_profile, materialize, recovery_objects
 NAMESPACE = 'ha-disaster-recovery'
@@ -73,6 +76,7 @@ def main():
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     rendered = subprocess.check_output(['kubectl', 'kustomize', str(ROOT / 'disaster_recovery')], text=True)
     objects = recovery_objects(list(yaml.safe_load_all(rendered)), site)
+    configure_local_capture(objects)
     for obj in objects:
         if obj['kind'] == 'CronJob':
             env = obj['spec']['jobTemplate']['spec']['template']['spec']['containers'][0]['env']

@@ -56,6 +56,61 @@ floor. Normal exceptions clean the attempt's temporary tar/gzip files. SIGKILL,
 node loss or a lost mount can strand scratch under an incomplete snapshot;
 confirm no worker uses it before removing it through the recovery procedure.
 
+For a reviewed component whose raw capture is limited by NAS writes, add a
+`local_capture` object alongside `staged_capture: true` in its runtime entry:
+
+```json
+{
+  "staged_capture": true,
+  "local_capture": {
+    "directory": "/capture",
+    "max_bytes": 3221225472,
+    "minimum_free_bytes": 5368709120
+  }
+}
+```
+
+Omission keeps the existing NAS capture path. The object requires exactly these
+three fields: a canonical absolute directory and positive integer byte limits.
+It requires staged capture and is independent of the component timeout. Only the
+raw tar moves to this directory; per-file/SQLite scratch, gzip, verification and
+the final exclusive hard-link publication stay on the NAS. Source checks and
+retry/deadline limits are unchanged. This reduces NAS traffic during capture but
+does not guarantee a stable source or a particular capture duration.
+
+The renderer adds a separate disk-backed `emptyDir`, never a memory volume, to
+the recovery worker when an entry opts in. Entries in one Job must share one
+directory. The largest configured raw cap becomes its ephemeral-storage request;
+the cap plus 1 GiB becomes both the volume size limit and ephemeral-storage limit.
+The extra allowance also covers worker logs and writable-layer usage; review it
+against actual node capacity. No volume or resource changes are made without
+the option, and the separate Music Assistant worker is unchanged. Render and
+review the manifest before rollout; verify that the node's kubelet storage is
+on the intended local disk. The example requests 3 GiB and limits usage to 4 GiB.
+
+For direct use outside Kubernetes, create a dedicated directory owned by the
+worker with mode 0700 under trusted ancestors. Missing roots, symlink ancestors,
+and overlap with either source or destination (including bind aliases) fail
+closed. Linux requires readable, valid mount identities; known memory and network
+filesystems are rejected even for an already private directory. The worker only
+changes an existing root's permissions when its held
+descriptor and Linux mount information prove it is the dedicated disk-backed
+Kubernetes emptyDir mount. It never changes an arbitrary ancestor's permissions.
+Attempt subdirectories are 0700 and raw tar files are 0600.
+
+Allow space for the complete uncompressed tar, including headers and padding.
+Every raw write is capped; the worker checks available filesystem space before
+capture for `max_bytes + minimum_free_bytes`, and before and after bounded writes
+for the configured free-space floor. These checks use space available to the
+worker; they are not a reservation against other writers, nor a guarantee from
+`emptyDir.sizeLimit`. With this option, peak NAS attempt scratch is approximately
+`max(G, S)` instead of `T + max(G, S)`; the local disk holds T separately. Include
+filesystem overhead, retained backups and both disks' reserves in sizing.
+Capacity, I/O or identity failures abort without falling back to NAS capture.
+Normal exceptions remove both attempt scratch directories. SIGKILL or node loss
+can leave local raw data until the Pod is deleted; container restart alone does
+not remove its emptyDir. Keep recovery data private during cleanup.
+
 ```sh
 python scripts/deploy-disaster-recovery.py --context YOUR_CONTEXT \
   --profile local/site.json > local/recovery-preview.yaml
