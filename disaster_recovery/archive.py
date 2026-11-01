@@ -49,6 +49,7 @@ from typing import BinaryIO, Iterator
 SQLITE_HEADER = b"SQLite format 3\x00"
 COPY_CHUNK = 1024 * 1024
 MEMORY_FILE_LIMIT = 8 * 1024 * 1024
+STAGED_MEMORY_FILE_LIMIT = 64 * 1024 * 1024
 FILE_COPY_ATTEMPTS = 3
 COMPONENT_ATTEMPTS = 3
 SQLITE_BUSY_WAIT_SECONDS = 5.0
@@ -73,8 +74,12 @@ class _SQLiteBusyTimeout(sqlite3.OperationalError):
 class _MemoryFile(io.BytesIO):
     """Bound staging memory even if a file grows after its initial stat."""
 
+    def __init__(self, limit: int = MEMORY_FILE_LIMIT):
+        super().__init__()
+        self.limit = limit
+
     def write(self, value: bytes) -> int:
-        if self.tell() + len(value) > MEMORY_FILE_LIMIT:
+        if self.tell() + len(value) > self.limit:
             raise SourceChangedError("Source file grew beyond the memory staging limit")
         return super().write(value)
 
@@ -280,7 +285,8 @@ def _copy_stream(source: BinaryIO, target: BinaryIO, deadline: float) -> int:
 
 
 def _copy_regular(
-    root_fd: int, relative: str, target: Path, deadline: float
+    root_fd: int, relative: str, target: Path, deadline: float,
+    *, memory_limit: int = MEMORY_FILE_LIMIT,
 ) -> tuple[os.stat_result, bool, io.BytesIO | None]:
     """Stage stable small files in bounded RAM; databases and large files use NAS."""
     last_error: Exception | None = None
@@ -301,8 +307,8 @@ def _copy_regular(
                     if header == SQLITE_HEADER:
                         return before, True, None
                     source.seek(0)
-                    if before.st_size <= MEMORY_FILE_LIMIT:
-                        memory = _MemoryFile()
+                    if before.st_size <= memory_limit:
+                        memory = _MemoryFile(memory_limit)
                         copied = _copy_stream(source, memory, deadline)
                     else:
                         target.touch(mode=0o600, exist_ok=True)
@@ -672,6 +678,7 @@ def _create_archive_attempt(
             skipped_sidecars: set[str] = set()
             quiescent_guards: dict[str, tuple] = {}
             names = ["."]
+            copy_options = {"memory_limit": STAGED_MEMORY_FILE_LIMIT} if staged_capture else {}
             with tarfile.open(captured, "w" if staged_capture else "w:gz", format=tarfile.PAX_FORMAT) as archive:
                 root_info = _tar_info(".", root_metadata)
                 root_info.type = tarfile.DIRTYPE
@@ -696,7 +703,8 @@ def _create_archive_attempt(
                         archive.addfile(info)
                         metadata["symlinks"].append({"path": relative, "target": target})
                     elif stat.S_ISREG(initial.st_mode):
-                        original, is_sqlite, memory = _copy_regular(root_fd, relative, staged, deadline)
+                        original, is_sqlite, memory = _copy_regular(root_fd, relative, staged, deadline,
+                                                                   **copy_options)
                         if is_sqlite:
                             method, guard = _snapshot_sqlite(source, root_fd, relative, original, staged, deadline)
                             if method == "stable_wal":
@@ -783,8 +791,9 @@ def create_archive(
     Ordinary source files and tree membership must be unchanged between the
     initial inventory and final check. A changed tree retries the whole component
     up to three times under ONE shared deadline, then raises SourceChangedError.
-    Ordinary files at most 8 MiB are staged in bounded memory to avoid a separate
-    NAS write/read/unlink cycle; SQLite and larger files always use NAS scratch.
+    Ordinary files at most 8 MiB (64 MiB with staged capture) are staged in bounded
+    memory to avoid a separate NAS write/read/unlink cycle. Only one payload is
+    retained at a time; SQLite and larger files always use NAS scratch.
     Opt-in staged capture writes an uncompressed tar on the same private scratch,
     checks the source, then compresses only those captured bytes. The single
     deadline still covers all phases. This requires space for both tar and gzip.

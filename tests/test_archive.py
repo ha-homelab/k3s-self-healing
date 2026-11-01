@@ -591,8 +591,8 @@ class ArchiveTests(unittest.TestCase):
         constructor = archive._MemoryFile
         buffers = []
 
-        def remember():
-            result = constructor()
+        def remember(*args, **kwargs):
+            result = constructor(*args, **kwargs)
             buffers.append(result)
             return result
 

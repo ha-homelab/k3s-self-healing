@@ -3,6 +3,8 @@
 from contextlib import closing
 import errno
 import gzip
+import hashlib
+import io
 import os
 from pathlib import Path
 import sqlite3
@@ -77,6 +79,132 @@ class StagedCaptureTests(unittest.TestCase):
         self.assertNotIn('compression_seconds', result)
         self.assertEqual(list(self.output.iterdir()), [self.destination])
 
+    def test_staged_memory_boundary_preserves_large_payloads_and_sqlite_path(self):
+        self.assertEqual(archive.STAGED_MEMORY_FILE_LIMIT, 64 * 1024 * 1024)
+        sizes = {'above-direct': archive.MEMORY_FILE_LIMIT + 1,
+                 'at-staged': archive.STAGED_MEMORY_FILE_LIMIT,
+                 'above-staged': archive.STAGED_MEMORY_FILE_LIMIT + 1}
+        for name, size in sizes.items():
+            with (self.source / name).open('wb') as output:
+                output.write(b'first')
+                output.seek(size - 4)
+                output.write(b'last')
+        with closing(sqlite3.connect(self.source / 'small.db')) as database, database:
+            database.execute('CREATE TABLE values_to_restore (value)')
+            database.execute("INSERT INTO values_to_restore VALUES ('retained')")
+        original = archive._copy_regular
+        observed, buffers = {}, []
+
+        def capture(*args, **options):
+            result = original(*args, **options)
+            _metadata, is_sqlite, memory = result
+            observed[args[1]] = (is_sqlite, isinstance(memory, io.BytesIO), args[2].exists())
+            if memory is not None:
+                buffers.append(memory)
+            return result
+
+        with patch.object(archive, '_copy_regular', side_effect=capture):
+            result = self.capture()
+        self.assertEqual(observed['above-direct'], (False, True, False))
+        self.assertEqual(observed['at-staged'], (False, True, False))
+        self.assertEqual(observed['above-staged'], (False, False, True))
+        self.assertEqual(observed['small.db'], (True, False, False))
+        self.assertTrue(all(buffer.closed for buffer in buffers))
+        self.assertEqual(result['sqlite_databases'], ['small.db'])
+        with tarfile.open(self.destination) as captured:
+            for name, size in sizes.items():
+                self.assertEqual(captured.getmember(name).size, size)
+                with (self.source / name).open('rb') as original_file, captured.extractfile(name) as restored:
+                    self.assertEqual(hashlib.file_digest(restored, 'sha256').digest(),
+                                     hashlib.file_digest(original_file, 'sha256').digest())
+            restored_database = self.base / 'restored.db'
+            restored_database.write_bytes(captured.extractfile('small.db').read())
+        with closing(sqlite3.connect(restored_database)) as database:
+            self.assertEqual(database.execute('SELECT value FROM values_to_restore').fetchall(),
+                             [('retained',)])
+
+    def test_staged_growth_past_cap_retries_on_disk_and_rejects_changed_inventory(self):
+        source = self.source / 'growing.bin'
+        with source.open('wb') as output:
+            output.truncate(archive.STAGED_MEMORY_FILE_LIMIT - 1)
+        original_copy, constructor = archive._copy_stream, archive._MemoryFile
+        buffers, changed = [], False
+
+        def remember(*args, **options):
+            buffer = constructor(*args, **options)
+            buffers.append(buffer)
+            return buffer
+
+        def grow_once(input_file, output_file, deadline):
+            nonlocal changed
+            if not changed:
+                changed = True
+                with source.open('r+b') as updated:
+                    updated.truncate(archive.STAGED_MEMORY_FILE_LIMIT + 1)
+            try:
+                return original_copy(input_file, output_file, deadline)
+            finally:
+                if isinstance(output_file, io.BytesIO):
+                    self.assertLessEqual(output_file.tell(), archive.STAGED_MEMORY_FILE_LIMIT)
+
+        with patch.object(archive, '_MemoryFile', side_effect=remember), \
+             patch.object(archive, '_copy_stream', side_effect=grow_once):
+            result = self.capture()
+        self.assertEqual(result['attempts'], 2)
+        self.assertTrue(all(buffer.closed for buffer in buffers))
+        self.assertEqual(list(self.output.iterdir()), [self.destination])
+        with tarfile.open(self.destination) as captured, source.open('rb') as original_file:
+            with captured.extractfile('growing.bin') as restored:
+                self.assertEqual(hashlib.file_digest(restored, 'sha256').digest(),
+                                 hashlib.file_digest(original_file, 'sha256').digest())
+
+    def test_staged_memory_exception_closes_payload_and_cleans_scratch(self):
+        source = self.source / 'above-direct'
+        with source.open('wb') as output:
+            output.truncate(archive.MEMORY_FILE_LIMIT + 1)
+        constructor, original_copy = archive._MemoryFile, archive._copy_stream
+        for error in (TimeoutError('expired'), OSError(errno.EIO, 'read failed')):
+            buffers = []
+
+            def remember(*args, **options):
+                buffer = constructor(*args, **options)
+                buffers.append(buffer)
+                return buffer
+
+            def fail_after_copy(input_file, output_file, deadline):
+                original_copy(input_file, output_file, deadline)
+                raise error
+
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(archive, '_MemoryFile', side_effect=remember), \
+                 patch.object(archive, '_copy_stream', side_effect=fail_after_copy):
+                with self.assertRaises(type(error)):
+                    self.capture()
+            self.assertEqual(len(buffers), 1)
+            self.assertTrue(buffers[0].closed)
+            self.assert_no_output()
+
+    def test_staged_mutation_retains_three_file_retries_per_component_attempt(self):
+        source = self.source / 'above-direct'
+        with source.open('wb') as output:
+            output.truncate(archive.MEMORY_FILE_LIMIT + 1)
+        original_copy = archive._copy_stream
+        calls = 0
+
+        def mutate_after_copy(input_file, output_file, deadline):
+            nonlocal calls
+            copied = original_copy(input_file, output_file, deadline)
+            calls += 1
+            with source.open('ab') as updated:
+                updated.write(b'x')
+            return copied
+
+        with patch.object(archive, '_copy_stream', side_effect=mutate_after_copy):
+            with self.assertRaises(archive.SourceChangedError):
+                self.capture()
+        self.assertEqual(calls, 9)
+        self.assert_no_output()
+
     def test_source_changes_during_compression_preserve_complete_captured_bytes(self):
         original = archive._compress_tar
 
@@ -106,8 +234,8 @@ class StagedCaptureTests(unittest.TestCase):
         (self.source / 'z-last').write_bytes(b'last')
         original = archive._copy_regular
 
-        def replace_earlier(root_fd, relative, target, deadline):
-            result = original(root_fd, relative, target, deadline)
+        def replace_earlier(root_fd, relative, target, deadline, **options):
+            result = original(root_fd, relative, target, deadline, **options)
             if relative == 'z-last':
                 replacement = self.source / '.replacement'
                 replacement.write_bytes(b'old state')
@@ -131,9 +259,9 @@ class StagedCaptureTests(unittest.TestCase):
         now = [100.0]
         changed = False
 
-        def change_once(root_fd, relative, target, deadline):
+        def change_once(root_fd, relative, target, deadline, **options):
             nonlocal changed
-            result = original_copy(root_fd, relative, target, deadline)
+            result = original_copy(root_fd, relative, target, deadline, **options)
             if relative == 'z-last' and not changed:
                 changed = True
                 (self.source / 'state.json').write_bytes(b'retried state')
@@ -153,8 +281,8 @@ class StagedCaptureTests(unittest.TestCase):
         now = [0.0]
         original = archive._copy_regular
 
-        def expire(*args):
-            result = original(*args)
+        def expire(*args, **options):
+            result = original(*args, **options)
             now[0] = 20.0
             return result
 
@@ -240,8 +368,8 @@ class StagedCaptureTests(unittest.TestCase):
         (self.source / 'z-last').write_bytes(b'last')
         original = archive._copy_regular
 
-        def mutate_after_snapshot(root_fd, relative, target, deadline):
-            result = original(root_fd, relative, target, deadline)
+        def mutate_after_snapshot(root_fd, relative, target, deadline, **options):
+            result = original(root_fd, relative, target, deadline, **options)
             if relative == 'z-last':
                 current = database.stat()
                 os.utime(database, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))

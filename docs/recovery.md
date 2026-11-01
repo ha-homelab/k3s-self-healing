@@ -39,6 +39,12 @@ for the accepted attempt. This moves compression outside the source-stability
 window but does not guarantee capture between recurring source writes. It does
 not create a transaction across files or services.
 
+Staged capture holds one ordinary file of up to 64 MiB in bounded memory to
+avoid an extra NAS write/read cycle. Direct compression retains the 8 MiB
+limit. Larger files and SQLite snapshots still use NAS scratch. These limits
+bound the file payload, not total process memory; allow additional memory for
+the interpreter, inventories, buffers and databases when sizing the worker.
+
 Budget additional NAS space before enabling this mode. With uncompressed tar
 size T, compressed size G and concurrent per-file/SQLite scratch S, peak attempt
 scratch is approximately `T + max(G, S)`, plus filesystem/database overhead and

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.14] - 2026-10-31
+
+### Changed
+
+- Stage one ordinary file of up to 64 MiB in memory during opt-in staged
+  capture, avoiding its extra NAS write/read cycle. Direct compression keeps
+  the 8 MiB limit; larger files and SQLite snapshots continue using NAS scratch.
+- Preserve source consistency checks, per-file retries, shared deadlines and
+  archive verification. The payload limit does not bound total worker memory;
+  review memory headroom before adopting the source update.
+
+### Upgrade
+
+Adopt the verified source release through the deployment repository's locked
+dependency workflow. Review worker memory headroom and measure staged capture
+before rollout. Existing running Jobs are unchanged; no profile change is needed.
+
+### Security
+
+The change grants no permissions and excludes no source data. Filesystem and
+SQLite consistency checks, owner-only scratch and atomic publication remain
+unchanged. The bounded payload allocation does not guarantee total memory use.
+
 ## [0.1.13] - 2026-10-31
 
 ### Added
