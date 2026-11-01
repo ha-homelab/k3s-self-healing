@@ -28,7 +28,8 @@ class RecoveryTimeoutTests(unittest.TestCase):
                 result = runner.archive_component(self.base / 'source', self.base / 'work',
                     'application', {'type': 'fixture'}, ['*.log'], ['images'], **supplied)
                 archive.assert_called_once_with(self.base / 'source', self.base / 'work/application.tar.gz',
-                    excludes=['*.log'], generated_image_caches=['images'], timeout_seconds=expected)
+                    excludes=['*.log'], generated_image_caches=['images'], timeout_seconds=expected,
+                    staged_capture=False)
                 self.assertEqual(result, {'name': 'application', 'source': {'type': 'fixture'}, 'bytes': 42})
 
     def test_helper_rejects_invalid_budgets_before_archiving(self):
@@ -66,9 +67,10 @@ class RecoveryTimeoutTests(unittest.TestCase):
         host = self.base / 'host'
         (host / 'etc').mkdir(parents=True)
         (host / 'etc/machine-id').write_text('fixture-machine')
-        claims = [{'name': 'application', 'archive_timeout_seconds': 1800}, {'name': 'mosquitto'}]
+        claims = [{'name': 'application', 'archive_timeout_seconds': 1800, 'staged_capture': True},
+                  {'name': 'mosquitto'}]
         host_sources = [{'name': 'host-state', 'path': '/state', 'archive_timeout_seconds': 3600},
-                        {'name': 'host-settings', 'path': '/settings'}]
+                        {'name': 'host-settings', 'path': '/settings', 'staged_capture': True}]
         sources = {}
         for item in claims + host_sources:
             source = host / item.get('path', item['name']).lstrip('/')
@@ -116,6 +118,11 @@ class RecoveryTimeoutTests(unittest.TestCase):
             'application.tar.gz': 1800, 'mosquitto.tar.gz': 900,
             'host-state.tar.gz': 3600, 'host-settings.tar.gz': 900,
             'kubernetes.tar.gz': 900, 'recovery-tools.tar.gz': 900,
+        })
+        self.assertEqual({call.args[1].name: call.kwargs['staged_capture'] for call in archive.call_args_list}, {
+            'application.tar.gz': True, 'mosquitto.tar.gz': False,
+            'host-state.tar.gz': False, 'host-settings.tar.gz': True,
+            'kubernetes.tar.gz': False, 'recovery-tools.tar.gz': False,
         })
         api.checkpoint_mosquitto.assert_called_once_with(pod)
         self.assertTrue(json.loads((snapshot / 'manifest.json').read_text())['completed'])

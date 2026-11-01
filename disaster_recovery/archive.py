@@ -84,6 +84,12 @@ def _check_deadline(deadline: float) -> None:
         raise TimeoutError("Component archive exceeded its time limit")
 
 
+def validate_staged_capture(value: bool) -> bool:
+    if type(value) is not bool:
+        raise ValueError("staged_capture must be a boolean")
+    return value
+
+
 def _normalize_excludes(excludes: list[str] | None) -> tuple[str, ...]:
     normalized = []
     for original in excludes or []:
@@ -620,12 +626,22 @@ def _tar_info(relative: str, metadata: os.stat_result) -> tarfile.TarInfo:
     return info
 
 
+def _compress_tar(source: Path, destination: Path, deadline: float) -> None:
+    """Compress a closed, validated capture without reading the live source."""
+    _check_deadline(deadline)
+    with source.open("rb") as captured, gzip.open(destination, "wb") as compressed:
+        _copy_stream(captured, compressed, deadline)
+    _check_deadline(deadline)
+
+
 def _create_archive_attempt(
     source: Path,
     destination: Path,
     exclusions: tuple[str, ...],
     deadline: float,
     generated_image_caches: tuple[str, ...] = (),
+    *,
+    staged_capture: bool = False,
 ) -> dict:
     parent = destination.parent
     metadata: dict = {
@@ -642,17 +658,21 @@ def _create_archive_attempt(
     }
     root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        capture_started = time.monotonic() if staged_capture else 0.0
         root_metadata = os.fstat(root_fd)
         entries = _entries(root_fd, exclusions, deadline, generated_image_caches)
         with tempfile.TemporaryDirectory(prefix=".ha-dr-archive-", dir=parent) as scratch:
             temporary = Path(scratch)
             draft = temporary / "archive.tar.gz"
             draft.touch(mode=0o600)
+            captured = temporary / "archive.tar" if staged_capture else draft
+            if staged_capture:
+                captured.touch(mode=0o600)
             staged = temporary / "file"
             skipped_sidecars: set[str] = set()
             quiescent_guards: dict[str, tuple] = {}
             names = ["."]
-            with tarfile.open(draft, "w:gz", format=tarfile.PAX_FORMAT) as archive:
+            with tarfile.open(captured, "w" if staged_capture else "w:gz", format=tarfile.PAX_FORMAT) as archive:
                 root_info = _tar_info(".", root_metadata)
                 root_info.type = tarfile.DIRTYPE
                 archive.addfile(root_info)
@@ -713,6 +733,14 @@ def _create_archive_attempt(
             if before != after:
                 raise SourceChangedError("Source tree changed during component capture: " + _tree_change_details(before, after))
 
+            if staged_capture:
+                capture_finished = time.monotonic()
+                _compress_tar(captured, draft, deadline)
+                metadata.update(staged_capture=True,
+                                capture_seconds=capture_finished - capture_started,
+                                compression_seconds=time.monotonic() - capture_finished)
+                captured.unlink()
+
             # Read through the gzip trailer (tar EOF alone does not check its CRC).
             with gzip.open(draft, "rb") as compressed:
                 while compressed.read(COPY_CHUNK):
@@ -742,6 +770,8 @@ def create_archive(
     excludes: list[str] | None = None,
     timeout_seconds: float = 120,
     generated_image_caches: list[str] | None = None,
+    *,
+    staged_capture: bool = False,
 ) -> dict:
     """Atomically publish a gzip tar and return its checksum and capture metadata.
 
@@ -755,6 +785,9 @@ def create_archive(
     up to three times under ONE shared deadline, then raises SourceChangedError.
     Ordinary files at most 8 MiB are staged in bounded memory to avoid a separate
     NAS write/read/unlink cycle; SQLite and larger files always use NAS scratch.
+    Opt-in staged capture writes an uncompressed tar on the same private scratch,
+    checks the source, then compresses only those captured bytes. The single
+    deadline still covers all phases. This requires space for both tar and gzip.
     Online SQLite snapshots exclude changing database content and sidecars from
     that comparison, while still detecting database replacement/removal.
     Inactive databases copied after a read-only WAL open failure retain strict
@@ -764,6 +797,7 @@ def create_archive(
     The '.' directory member records the source root's ownership, mode and mtime;
     the returned directories count includes that root.
     """
+    validate_staged_capture(staged_capture)
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
     deadline = time.monotonic() + timeout_seconds
@@ -786,7 +820,8 @@ def create_archive(
     for attempt in range(1, COMPONENT_ATTEMPTS + 1):
         _check_deadline(deadline)
         try:
-            metadata = _create_archive_attempt(source, destination, exclusions, deadline, groups)
+            metadata = _create_archive_attempt(source, destination, exclusions, deadline, groups,
+                                               staged_capture=staged_capture)
             metadata["attempts"] = attempt
             return metadata
         except (SourceChangedError, FileNotFoundError) as error:

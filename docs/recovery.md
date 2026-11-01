@@ -28,6 +28,28 @@ the complete recovery Job still has a 5400-second deadline. This is a runtime
 configuration field, not a site-profile key. Service metadata archives and the
 separate Music Assistant worker retain the 900-second component default.
 
+An entry may also set `staged_capture: true` (a strict boolean, default `false`),
+independently of its timeout. This first writes an uncompressed tar to the same
+private NAS scratch, closes it and checks the live source with the existing
+file/tree and SQLite guards. Only then is the captured tar compressed. Source
+changes during capture still reject the attempt; later changes cannot alter the
+captured bytes. The same deadline includes capture, compression and verification.
+Successful staged components record `capture_seconds` and `compression_seconds`
+for the accepted attempt. This moves compression outside the source-stability
+window but does not guarantee capture between recurring source writes. It does
+not create a transaction across files or services.
+
+Budget additional NAS space before enabling this mode. With uncompressed tar
+size T, compressed size G and concurrent per-file/SQLite scratch S, peak attempt
+scratch is approximately `T + max(G, S)`, plus filesystem/database overhead and
+other retained data. Without a measured compression bound, allow roughly twice
+the uncompressed payload plus that additional scratch and reserve. NAS traffic
+also gains one full tar write and read. `minimum_free_bytes` checks free space
+at run start only; it does not reserve capacity or continuously guarantee the
+floor. Normal exceptions clean the attempt's temporary tar/gzip files. SIGKILL,
+node loss or a lost mount can strand scratch under an incomplete snapshot;
+confirm no worker uses it before removing it through the recovery procedure.
+
 ```sh
 python scripts/deploy-disaster-recovery.py --context YOUR_CONTEXT \
   --profile local/site.json > local/recovery-preview.yaml
