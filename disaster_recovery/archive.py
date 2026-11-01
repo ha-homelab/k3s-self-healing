@@ -49,6 +49,7 @@ from .local_capture import (
     local_raw_capture, local_sqlite_mirror, validate_local_capture,
     validate_sqlite_validation_mirror,
 )
+from .restore import RestoreError, _relative
 
 
 SQLITE_HEADER = b"SQLite format 3\x00"
@@ -241,6 +242,10 @@ def _entries(
                 continue
             if _is_sqlite_sidecar(directory_fd, name):
                 continue
+            try:
+                _relative(relative)
+            except RestoreError as error:
+                raise ArchiveError("Source contains an unsupported archive member path") from error
             try:
                 metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             except FileNotFoundError:

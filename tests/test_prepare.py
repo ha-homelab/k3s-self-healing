@@ -109,6 +109,14 @@ class PreparationTests(unittest.TestCase):
             prepare.prepare_snapshot(self.snapshot, self.snapshot / 'prepared', ['application'])
         self.assertFalse((self.snapshot / 'prepared').exists())
 
+    def test_non_posix_preparation_fails_before_any_filesystem_access(self):
+        with patch.object(prepare, 'os', SimpleNamespace(name='nt')), \
+                patch.object(prepare, 'Path') as path:
+            with self.assertRaisesRegex(prepare.PreparationError, 'requires POSIX'):
+                prepare.prepare_snapshot(self.snapshot, self.workspace, ['application'])
+            path.assert_not_called()
+        self.assertFalse(self.workspace.exists())
+
     def test_legitimate_directory_setgid_and_sticky_are_preserved_but_setuid_is_rejected(self):
         self.component('setgid', root_mode=0o2777)
         self.component('sticky', root_mode=0o1777)

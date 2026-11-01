@@ -310,6 +310,14 @@ archives. Extract into an empty isolated destination. The tools reject traversal
 duplicate members, unsafe links, mismatched hashes and unconfirmed completion.
 They do not start HA or import a database as a side effect of extraction.
 
+Literal `\xNN` filename escapes, such as systemd unit names containing `\x2d`,
+are preserved exactly; they are never decoded into characters or separators.
+Other backslash spellings remain unsupported. Capture rejects unsupported
+member paths during its initial inventory, before copying component payloads.
+Verification is platform independent, but extracting names or preserved link targets
+containing literal backslashes requires POSIX and fails before creating the
+destination on other platforms. Offline ownership preparation also requires POSIX.
+
 `helm/native-recovery` starts with zero HA replicas and a separate restore
 workspace. `scripts/restore-native-backup.py` requires explicit NAS host and
 directory values and checks that the workspace is still stopped and owned by the

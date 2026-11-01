@@ -155,6 +155,8 @@ def _trusted_parent(path):
 
 def prepare_snapshot(snapshot, workspace, components):
     """Extract every archive safely, then prepare only explicitly selected components."""
+    if os.name != 'posix':
+        raise PreparationError('Offline ownership preparation requires POSIX')
     if os.geteuid() != 0:
         raise PreparationError('Root is required to restore original numeric ownership offline')
     selected = list(components)

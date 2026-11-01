@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -246,13 +247,76 @@ class RestoreTests(unittest.TestCase):
             verify_snapshot(self.snapshot)
 
     def test_absolute_parent_and_windows_member_paths_are_rejected(self):
-        for member_name in ["../outside", "/absolute", "safe/../../outside", "C:\\outside", "safe\\..\\outside"]:
+        for member_name in ["../outside", "/absolute", "safe/../../outside", "C:\\outside", "safe\\..\\outside",
+                            r"C:\x2d", r"\\server\share", r"safe\child", r"safe\xGG", r"safe\x2", r"safe\x", r"safe\u002f",
+                            r"safe\\x2d", "safe\nname", r"safe\x2d/../outside"]:
             with self.subTest(path=member_name):
                 self.manifest["components"] = []
                 self.add_component([regular(member_name)])
                 with self.assertRaisesRegex(RestoreError, "unsafe member path"):
                     verify_snapshot(self.snapshot, self.destination)
                 self.assertFalse(self.destination.exists())
+
+    def test_literal_hex_names_and_relative_links_are_preserved_without_decoding(self):
+        unit = r"example\x2ddata.mount"
+        literal_parent = r"\x2e\x2e"
+        self.add_component([
+            directory("systemd"), directory("systemd/system"),
+            regular("systemd/system/" + unit, b"[Mount]\n"),
+            directory("systemd/system/target.wants"),
+            link("systemd/system/target.wants/" + unit, "../" + unit),
+            link("hard-copy", "systemd/system/" + unit, hard=True),
+            directory(literal_parent), regular(literal_parent + "/kept", b"literal"),
+            regular(r"literal\x2fseparator", b"not a subdirectory"),
+        ])
+        report = verify_snapshot(self.snapshot, self.destination)
+        root = self.destination / "home_assistant"
+        target = root / "systemd/system" / unit
+        alias = root / "systemd/system/target.wants" / unit
+        self.assertEqual(target.read_bytes(), b"[Mount]\n")
+        self.assertEqual(os.readlink(alias), "../" + unit)
+        self.assertEqual(alias.read_bytes(), target.read_bytes())
+        self.assertEqual((root / "hard-copy").stat().st_ino, target.stat().st_ino)
+        self.assertEqual((root / literal_parent / "kept").read_bytes(), b"literal")
+        self.assertEqual((root / r"literal\x2fseparator").read_bytes(), b"not a subdirectory")
+        self.assertFalse((root / "literal").exists())
+        self.assertFalse((root / "systemd/system/example-data.mount").exists())
+        self.assertFalse((self.destination / "kept").exists())
+        self.assertEqual(report["components"][0]["skipped_links"], [])
+
+    def test_non_posix_hex_extraction_fails_before_any_directory_creation(self):
+        for member in [regular(r"unit\x2ddata.mount"), link("alias", r"unit\x2ddata.mount")]:
+            with self.subTest(member=member[0].name):
+                self.manifest["components"] = []
+                self.add_component([regular("ordinary")], name="first")
+                self.add_component([member], name="second")
+                with patch.object(restore, "os", SimpleNamespace(**{**vars(os), "name": "nt"})):
+                    self.assertEqual(verify_snapshot(self.snapshot)["status"], "verified")
+                    with patch.object(Path, "mkdir") as mkdir:
+                        with self.assertRaisesRegex(RestoreError, "require POSIX extraction"):
+                            verify_snapshot(self.snapshot, self.destination)
+                        mkdir.assert_not_called()
+                self.assertFalse(self.destination.exists())
+
+    def test_hex_relative_links_still_reject_traversal_through_an_alias(self):
+        unit = r"example\x2ddata.mount"
+        self.add_component([link("alias", "/outside"), link(unit, "alias/" + unit),
+                            link("windows", r"safe\..\outside")])
+        report = verify_snapshot(self.snapshot, self.destination)
+        skipped = {item["path"]: item["skip_reason"] for item in report["components"][0]["skipped_links"]}
+        self.assertEqual(skipped[unit], "target_traverses_link")
+        self.assertEqual(skipped["windows"], "invalid_target")
+
+    def test_non_posix_skipped_windows_link_does_not_block_ordinary_extraction(self):
+        self.add_component([regular("ordinary", b"kept"), link("windows", r"C:\outside")])
+        with patch.object(restore, "os", SimpleNamespace(**{**vars(os), "name": "nt"})):
+            self.assertEqual(verify_snapshot(self.snapshot)["status"], "verified")
+            report = verify_snapshot(self.snapshot, self.destination)
+        root = self.destination / "home_assistant"
+        self.assertEqual((root / "ordinary").read_bytes(), b"kept")
+        self.assertFalse((root / "windows").exists())
+        self.assertFalse((root / "windows").is_symlink())
+        self.assertEqual(report["components"][0]["skipped_links"][0]["path"], "windows")
 
     def test_devices_and_fifos_are_rejected(self):
         for member_type in [tarfile.CHRTYPE, tarfile.BLKTYPE, tarfile.FIFOTYPE]:

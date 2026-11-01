@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.18] - 2026-11-01
+
+### Fixed
+
+- Preserve literal hexadecimal escapes in POSIX archive names and relative link
+  targets, including escaped systemd unit names, without decoding them.
+- Share member-path validation between capture and restore so unsupported names
+  fail during inventory before component payloads are copied.
+- Reject extraction of literal-backslash paths on non-POSIX platforms before
+  creating the destination. Existing traversal, link and integrity checks remain
+  unchanged; offline ownership preparation explicitly requires POSIX.
+
+### Upgrade
+
+Adopt the verified source through the locked dependency workflow. No profile
+changes are required. Previously rejected archives can be checked with the
+updated verifier, but verification alone does not promote incomplete snapshots.
+
+### Security
+
+Escape sequences remain literal filename bytes. Absolute paths, traversal,
+unsupported backslashes and unsafe link chains retain their existing rejection
+or skip behavior. Platform checks prevent native path interpretation from
+changing the meaning of accepted names during extraction.
+
 ## [0.1.17] - 2026-11-01
 
 ### Added
