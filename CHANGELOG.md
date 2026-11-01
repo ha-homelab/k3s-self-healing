@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.13] - 2026-10-31
+
+### Added
+
+- Add opt-in `staged_capture` for recovery components. Capture an uncompressed
+  tar and verify the source before compression, so compression no longer
+  requires the live source to remain unchanged. Record capture and compression
+  durations for successful staged attempts.
+- Keep direct compression as the default. Reject non-boolean settings before
+  backup side effects; retain the existing component deadline and retry count.
+
+### Upgrade
+
+Adopt the verified source release through the deployment repository's locked
+dependency workflow. Enable staging only for reviewed components with space for
+the raw tar, compressed archive, concurrent file/database scratch and reserve.
+The initial free-space check does not reserve capacity. Measure the capture
+window; staging does not guarantee a stable source. Running Jobs are unchanged.
+
+### Security
+
+Source consistency guards, archive verification and atomic publication remain
+unchanged. Staging grants no permissions and excludes no source data. Temporary
+raw archives remain owner-only; abrupt termination can leave private scratch
+that requires inspection before cleanup.
+
 ## [0.1.12] - 2026-10-31
 
 ### Fixed

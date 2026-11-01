@@ -15,7 +15,7 @@ import tempfile
 import time
 import traceback
 
-from .archive import create_archive, SourceChangedError
+from .archive import create_archive, SourceChangedError, validate_staged_capture
 from .kubernetes import Kubernetes
 
 PROFILE = 'ha-homelab-dr-v1'
@@ -148,15 +148,17 @@ def validate_archive_timeout(value):
 
 
 def archive_component(source, work, name, metadata, excludes=(), generated_image_caches=(),
-                      *, archive_timeout_seconds=DEFAULT_ARCHIVE_TIMEOUT_SECONDS):
+                      *, archive_timeout_seconds=DEFAULT_ARCHIVE_TIMEOUT_SECONDS, staged_capture=False):
     archive_timeout_seconds = validate_archive_timeout(archive_timeout_seconds)
+    validate_staged_capture(staged_capture)
     destination = work / (name + '.tar.gz')
     try:
         # create_archive already retries three times under one shared deadline.
         # Repeating that operation here multiplied uploads and reset the budget.
         result = create_archive(source, destination, excludes=list(excludes),
                                 timeout_seconds=archive_timeout_seconds,
-                                generated_image_caches=list(generated_image_caches))
+                                generated_image_caches=list(generated_image_caches),
+                                staged_capture=staged_capture)
         return {'name': name, 'source': metadata, **result}
     except SourceChangedError as error:
         diagnostic = work / (name + '-source-change.private.json')
@@ -190,6 +192,7 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
     for section in ('claims', 'host_sources'):
         for item in config.get(section, []):
             validate_archive_timeout(item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS))
+            validate_staged_capture(item.get('staged_capture', False))
 
     os.umask(0o077)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -251,7 +254,8 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                                    if p.name.startswith(('.ha-homelab-stage-', '.ha-homelab-backup-'))]
                 result = archive_component(source, work, item['name'], location, exclusions,
                                            item.get('generated_image_caches', []),
-                    archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS))
+                    archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
+                    staged_capture=item.get('staged_capture', False))
                 manifest['components'].append(result)
                 print('Captured ' + item['name'], flush=True)
             manifest['metadata']['optional_sources_absent'] = []
@@ -262,7 +266,8 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                     continue
                 manifest['components'].append(archive_component(source, work, item['name'],
                     {'type': 'host', 'node': config['node'], 'path': item['path']}, item.get('exclude', []),
-                    archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS)))
+                    archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
+                    staged_capture=item.get('staged_capture', False)))
                 print('Captured ' + item['name'], flush=True)
             manifest['components'].append(archive_component(state_root, work, 'kubernetes',
                 {'type': 'api', 'version': api.get('/version')['gitVersion']}))
