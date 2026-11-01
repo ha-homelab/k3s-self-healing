@@ -123,7 +123,7 @@ class StagedCaptureTests(unittest.TestCase):
             self.assertEqual(database.execute('SELECT value FROM values_to_restore').fetchall(),
                              [('retained',)])
 
-    def test_staged_growth_past_cap_retries_on_disk_and_rejects_changed_inventory(self):
+    def test_staged_growth_past_cap_retries_on_disk_with_captured_baseline(self):
         source = self.source / 'growing.bin'
         with source.open('wb') as output:
             output.truncate(archive.STAGED_MEMORY_FILE_LIMIT - 1)
@@ -137,7 +137,7 @@ class StagedCaptureTests(unittest.TestCase):
 
         def grow_once(input_file, output_file, deadline):
             nonlocal changed
-            if not changed:
+            if not changed and os.fstat(input_file.fileno()).st_ino == source.stat().st_ino:
                 changed = True
                 with source.open('r+b') as updated:
                     updated.truncate(archive.STAGED_MEMORY_FILE_LIMIT + 1)
@@ -150,7 +150,7 @@ class StagedCaptureTests(unittest.TestCase):
         with patch.object(archive, '_MemoryFile', side_effect=remember), \
              patch.object(archive, '_copy_stream', side_effect=grow_once):
             result = self.capture()
-        self.assertEqual(result['attempts'], 2)
+        self.assertEqual(result['attempts'], 1)
         self.assertTrue(all(buffer.closed for buffer in buffers))
         self.assertEqual(list(self.output.iterdir()), [self.destination])
         with tarfile.open(self.destination) as captured, source.open('rb') as original_file:
@@ -194,9 +194,10 @@ class StagedCaptureTests(unittest.TestCase):
         def mutate_after_copy(input_file, output_file, deadline):
             nonlocal calls
             copied = original_copy(input_file, output_file, deadline)
-            calls += 1
-            with source.open('ab') as updated:
-                updated.write(b'x')
+            if os.fstat(input_file.fileno()).st_ino == source.stat().st_ino:
+                calls += 1
+                with source.open('ab') as updated:
+                    updated.write(b'x')
             return copied
 
         with patch.object(archive, '_copy_stream', side_effect=mutate_after_copy):
@@ -236,7 +237,7 @@ class StagedCaptureTests(unittest.TestCase):
 
         def replace_earlier(root_fd, relative, target, deadline, **options):
             result = original(root_fd, relative, target, deadline, **options)
-            if relative == 'z-last':
+            if relative == 'state.json':
                 replacement = self.source / '.replacement'
                 replacement.write_bytes(b'old state')
                 replacement.replace(self.source / 'state.json')
@@ -366,19 +367,18 @@ class StagedCaptureTests(unittest.TestCase):
             connection.execute('CREATE TABLE saved(value TEXT)')
             connection.commit()
         (self.source / 'z-last').write_bytes(b'last')
-        original = archive._copy_regular
+        original = archive._snapshot_sqlite
 
-        def mutate_after_snapshot(root_fd, relative, target, deadline, **options):
-            result = original(root_fd, relative, target, deadline, **options)
-            if relative == 'z-last':
-                current = database.stat()
-                os.utime(database, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))
+        def mutate_after_snapshot(*args, **options):
+            result = original(*args, **options)
+            current = database.stat()
+            os.utime(database, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))
             return result
 
         error = sqlite3.OperationalError('synthetic read-only WAL open failure')
         error.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
         with patch.object(archive, '_snapshot_sqlite_online', side_effect=error), \
-             patch.object(archive, '_copy_regular', side_effect=mutate_after_snapshot), \
+             patch.object(archive, '_snapshot_sqlite', side_effect=mutate_after_snapshot), \
              patch.object(archive, '_compress_tar') as compress:
             with self.assertRaises(archive.SourceChangedError):
                 self.capture()

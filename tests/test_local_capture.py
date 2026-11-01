@@ -130,19 +130,18 @@ class LocalCaptureTests(unittest.TestCase):
             connection.execute('CREATE TABLE saved(value)')
             connection.commit()
         (self.source / 'z-last').write_bytes(b'last')
-        original = archive._copy_regular
+        original = archive._snapshot_sqlite
 
-        def mutate_after_snapshot(root_fd, relative, target, deadline, **kwargs):
-            result = original(root_fd, relative, target, deadline, **kwargs)
-            if relative == 'z-last':
-                previous = database.stat()
-                os.utime(database, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1000000000))
+        def mutate_after_snapshot(*args, **kwargs):
+            result = original(*args, **kwargs)
+            previous = database.stat()
+            os.utime(database, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1000000000))
             return result
 
         failure = sqlite3.OperationalError('synthetic read-only WAL open failure')
         failure.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
         with patch.object(archive, '_snapshot_sqlite_online', side_effect=failure), \
-             patch.object(archive, '_copy_regular', side_effect=mutate_after_snapshot), \
+             patch.object(archive, '_snapshot_sqlite', side_effect=mutate_after_snapshot), \
              patch.object(archive, '_compress_tar') as compress:
             with self.assertRaises(archive.SourceChangedError):
                 self.capture()

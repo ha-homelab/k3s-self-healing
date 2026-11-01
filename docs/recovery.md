@@ -31,13 +31,33 @@ separate Music Assistant worker retain the 900-second component default.
 An entry may also set `staged_capture: true` (a strict boolean, default `false`),
 independently of its timeout. This first writes an uncompressed tar to the same
 private NAS scratch, closes it and checks the live source with the existing
-file/tree and SQLite guards. Only then is the captured tar compressed. Source
-changes during capture still reject the attempt; later changes cannot alter the
-captured bytes. The same deadline includes capture, compression and verification.
+file/tree and SQLite guards. Only then is the captured tar compressed. An ordinary
+file must remain unchanged during its successful copy and match that captured
+version at the final scan. Changes before its copy, including an atomic regular
+file replacement, may be accepted. Changes after copying still reject the
+attempt; later changes after accepted capture cannot alter the captured bytes.
+The same deadline includes capture, compression and verification.
 Successful staged components record `capture_seconds` and `compression_seconds`
 for the accepted attempt. This moves compression outside the source-stability
 window but does not guarantee capture between recurring source writes. It does
 not create a transaction across files or services.
+
+Both capture modes compare ordinary files against their successful copy's full
+identity and metadata, rather than against the initial inventory. Under the
+existing filesystem-signature checks, these payloads coexist at the observed
+end-of-copy boundary. Directory and symlink identities, member inventory and
+SQLite guards remain unchanged; the final scan is not an atomic filesystem
+snapshot. File contents are classified at capture: a file captured as SQLite
+retains its original identity checks, while a former database replaced by an
+ordinary file before copying is checked as an ordinary file.
+
+Staged capture reads regular-file families from oldest to newest according to
+the newest initial modification time in each family, with deterministic path
+ties. A base and its existing `-wal`, `-shm`, and `-journal` descendants stay
+together, base first, even for ordinary files. Direct capture retains lexical
+ordering. This heuristic can shorten the interval between copying a frequently
+updated file and checking it, but preserved timestamps or concurrent writes can
+still cause retries. It excludes no files and changes no retry or timeout limit.
 
 Staged capture holds one ordinary file of up to 64 MiB in bounded memory to
 avoid an extra NAS write/read cycle. Direct compression retains the 8 MiB
