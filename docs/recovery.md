@@ -18,6 +18,16 @@ node. The initial profile covers the HA and Mosquitto PVCs. Select additional
 installed PVCs explicitly through `recovery_components`; their absence fails
 the backup rather than producing an incomplete success.
 
+In the worker's runtime `config.json`, each `claims` or `host_sources` entry may
+set `archive_timeout_seconds` to an integer from 1 through 3600; omission keeps
+the 900-second default. All entries, including absent optional sources, are
+validated before filesystem writes or Kubernetes access. Use a larger budget
+for required data that takes longer to capture, after reviewing its size and
+storage throughput. Up to three attempts for one component share this budget;
+the complete recovery Job still has a 5400-second deadline. This is a runtime
+configuration field, not a site-profile key. Service metadata archives and the
+separate Music Assistant worker retain the 900-second component default.
+
 ```sh
 python scripts/deploy-disaster-recovery.py --context YOUR_CONTEXT \
   --profile local/site.json > local/recovery-preview.yaml

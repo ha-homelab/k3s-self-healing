@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.12] - 2026-10-31
+
+### Fixed
+
+- Allow a reviewed per-component archive time budget for larger recovery sources
+  instead of requiring every source to fit the default 15 minutes. Reject invalid
+  budgets before creating backup state or contacting the cluster.
+- Keep the 15-minute default and bound overrides to one hour. All retries for a
+  component share that budget; archive integrity checks and the overall Job
+  deadline remain unchanged.
+
+### Upgrade
+
+Adopt the verified source release through the deployment repository's locked
+dependency workflow. Set `archive_timeout_seconds` only on a measured claim or
+host source in the protected recovery profile, and allow room for the remaining
+components within the Job deadline. Do not remove application assets or rollback
+data merely to make a backup finish faster. Existing profiles need no change.
+Updating the source does not change active Jobs or running applications.
+
+### Security
+
+The option changes a bounded capture budget only. It grants no permissions and
+does not change source selection, filesystem guards, consistency checks, capacity
+reserves, archive format, retention or publication requirements.
+
 ## [0.1.11] - 2026-10-29
 
 ### Updated
