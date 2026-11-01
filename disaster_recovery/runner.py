@@ -15,7 +15,7 @@ import tempfile
 import time
 import traceback
 
-from .archive import create_archive, SourceChangedError, validate_staged_capture
+from .archive import create_archive, SourceChangedError, validate_staged_capture, validate_wal_snapshot
 from .kubernetes import Kubernetes
 from .local_capture import validate_local_capture
 
@@ -150,10 +150,11 @@ def validate_archive_timeout(value):
 
 def archive_component(source, work, name, metadata, excludes=(), generated_image_caches=(),
                       *, archive_timeout_seconds=DEFAULT_ARCHIVE_TIMEOUT_SECONDS, staged_capture=False,
-                      local_capture=None):
+                      local_capture=None, wal_snapshot=None):
     archive_timeout_seconds = validate_archive_timeout(archive_timeout_seconds)
     validate_staged_capture(staged_capture)
     local_capture = validate_local_capture(local_capture, staged_capture=staged_capture)
+    wal_snapshot = validate_wal_snapshot(wal_snapshot)
     destination = work / (name + '.tar.gz')
     try:
         # create_archive already retries three times under one shared deadline.
@@ -162,7 +163,8 @@ def archive_component(source, work, name, metadata, excludes=(), generated_image
                                 timeout_seconds=archive_timeout_seconds,
                                 generated_image_caches=list(generated_image_caches),
                                 staged_capture=staged_capture,
-                                **({'local_capture': local_capture} if local_capture is not None else {}))
+                                **({'local_capture': local_capture} if local_capture is not None else {}),
+                                **({'wal_snapshot': wal_snapshot} if wal_snapshot is not None else {}))
         return {'name': name, 'source': metadata, **result}
     except SourceChangedError as error:
         diagnostic = work / (name + '-source-change.private.json')
@@ -198,6 +200,7 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
             validate_archive_timeout(item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS))
             validate_staged_capture(item.get('staged_capture', False))
             validate_local_capture(item.get('local_capture'), staged_capture=item.get('staged_capture', False))
+            validate_wal_snapshot(item.get('wal_snapshot'))
 
     os.umask(0o077)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -261,7 +264,8 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                                            item.get('generated_image_caches', []),
                     archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
                     staged_capture=item.get('staged_capture', False),
-                    **({'local_capture': item['local_capture']} if item.get('local_capture') is not None else {}))
+                    **({'local_capture': item['local_capture']} if item.get('local_capture') is not None else {}),
+                    **({'wal_snapshot': item['wal_snapshot']} if item.get('wal_snapshot') is not None else {}))
                 manifest['components'].append(result)
                 print('Captured ' + item['name'], flush=True)
             manifest['metadata']['optional_sources_absent'] = []
@@ -274,7 +278,8 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                     {'type': 'host', 'node': config['node'], 'path': item['path']}, item.get('exclude', []),
                     archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
                     staged_capture=item.get('staged_capture', False),
-                    **({'local_capture': item['local_capture']} if item.get('local_capture') is not None else {})))
+                    **({'local_capture': item['local_capture']} if item.get('local_capture') is not None else {}),
+                    **({'wal_snapshot': item['wal_snapshot']} if item.get('wal_snapshot') is not None else {})))
                 print('Captured ' + item['name'], flush=True)
             manifest['components'].append(archive_component(state_root, work, 'kubernetes',
                 {'type': 'api', 'version': api.get('/version')['gitVersion']}))

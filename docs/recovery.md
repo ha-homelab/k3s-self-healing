@@ -111,6 +111,32 @@ Normal exceptions remove both attempt scratch directories. SIGKILL or node loss
 can leave local raw data until the Pod is deleted; container restart alone does
 not remove its emptyDir. Keep recovery data private during cleanup.
 
+Incremental SQLite backups can restart when another connection commits changes.
+For a reviewed WAL database workload, its component entry may opt into
+`"wal_snapshot": {"minimum_free_bytes": 5368709120}`. The object accepts exactly
+one positive integer field; omission keeps the existing SQLite behavior. It is
+independent of tar staging and local capture. Only a database confirmed to use
+WAL receives an explicit read snapshot; other journal modes are unchanged.
+The resulting copy represents that snapshot's revision while writer commits
+continue. See SQLite's [backup API](https://sqlite.org/c3ref/backup_finish.html)
+and [WAL concurrency](https://sqlite.org/wal.html#concurrency) documentation.
+
+A pinned reader can delay checkpoints and grow the source WAL. Before enabling
+this option, allow source-disk headroom for writes during the entire database
+copy. The worker checks available space through the held source-directory
+descriptor before pinning and on every backup progress callback, aborting below
+the configured floor. The example preserves a 5 GiB floor on the **source**
+filesystem, separate from NAS or local-capture reserves. This is a repeated
+check, not a reservation or a bound on concurrent writers. Keep operational
+disk monitoring; a blocked I/O call can delay the next check.
+
+The read transaction is released immediately when database copying finishes
+or raises, before destination integrity checks, compression or archive checks.
+The existing shared deadline and guarded fallback policies remain in force;
+this option never changes the source journal mode or checkpoints the source.
+Successful components list actually pinned databases in
+`sqlite_pinned_wal_snapshots`; that field is absent when none were pinned.
+
 ```sh
 python scripts/deploy-disaster-recovery.py --context YOUR_CONTEXT \
   --profile local/site.json > local/recovery-preview.yaml

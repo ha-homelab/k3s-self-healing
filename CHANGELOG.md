@@ -9,6 +9,9 @@
   existing source consistency checks, retry counts and deadlines are retained.
 - Render a separate disk-backed emptyDir and explicit ephemeral-storage budgets
   only for configured recovery entries. The default storage path is unchanged.
+- Add opt-in WAL read snapshots with a source-filesystem free-space floor to
+  prevent repeated incremental-backup restarts under concurrent commits. Release
+  each reader before destination validation; other journal modes are unchanged.
 
 ### Upgrade
 
@@ -17,6 +20,8 @@ dependency workflow, including the new local_capture.py module in both worker
 source ConfigMaps. Review local disk capacity, private scratch permissions and
 the rendered volume/resource changes before explicitly enabling local capture.
 Measure capture duration before rollout. Existing running Jobs are unchanged.
+Enable WAL snapshots separately only after reviewing source-disk headroom for
+WAL growth while the read snapshot is held.
 
 ### Security
 
@@ -26,6 +31,9 @@ and fails closed on capacity or identity errors. A dedicated Kubernetes emptyDir
 may be made private only after descriptor and mount verification. Space checks
 do not reserve capacity against other writers; interrupted Pods may retain raw
 data until deletion. No source exclusions or consistency checks are weakened.
+WAL snapshots keep source access read-only and check its disk floor on every
+backup progress callback. They can delay checkpoints; checks cannot reserve
+space against writers or interrupt a blocked filesystem operation.
 
 ## [0.1.14] - 2026-10-31
 
