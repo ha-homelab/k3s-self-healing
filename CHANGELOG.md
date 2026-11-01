@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.17] - 2026-11-01
+
+### Added
+
+- Add an opt-in bounded local mirror for validating closed SQLite snapshots.
+  Online backup and source transaction release remain unchanged; full read-only
+  validation and tar input use the same local bytes. Final publication stays on
+  NAS, with existing source guards, deadlines and retry limits.
+- Render separate disk scratch and explicit peak ephemeral-storage budgets.
+  Local raw capture and SQLite mirroring cannot share a component; default
+  storage and guarded physical fallback behavior are unchanged.
+
+### Upgrade
+
+Adopt the verified source through the locked dependency workflow. Enable
+`sqlite_validation_mirror` only after reviewing local disk capacity, free-space
+floor and the rendered volume/resource changes. No profile change is required
+for existing behavior.
+
+### Security
+
+Local mirrors use private directories, bounded writes, disk identity checks and
+verified payload digests. Output validation errors never select a source
+fallback. Scratch directories assume trusted processes with the worker's UID
+or elevated privileges; they are not an isolation boundary against those actors.
+
 ## [0.1.16] - 2026-11-01
 
 ### Changed

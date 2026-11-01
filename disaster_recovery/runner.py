@@ -17,7 +17,7 @@ import traceback
 
 from .archive import create_archive, SourceChangedError, validate_staged_capture, validate_wal_snapshot
 from .kubernetes import Kubernetes
-from .local_capture import validate_local_capture
+from .local_capture import validate_local_capture, validate_sqlite_validation_mirror
 
 PROFILE = 'ha-homelab-dr-v1'
 SNAPSHOT_NAME = re.compile(r'\d{8}T\d{6}Z-[a-f0-9]{8}\Z')
@@ -150,10 +150,12 @@ def validate_archive_timeout(value):
 
 def archive_component(source, work, name, metadata, excludes=(), generated_image_caches=(),
                       *, archive_timeout_seconds=DEFAULT_ARCHIVE_TIMEOUT_SECONDS, staged_capture=False,
-                      local_capture=None, wal_snapshot=None):
+                      local_capture=None, wal_snapshot=None, sqlite_validation_mirror=None):
     archive_timeout_seconds = validate_archive_timeout(archive_timeout_seconds)
     validate_staged_capture(staged_capture)
     local_capture = validate_local_capture(local_capture, staged_capture=staged_capture)
+    sqlite_validation_mirror = validate_sqlite_validation_mirror(sqlite_validation_mirror,
+                                                                local_capture=local_capture)
     wal_snapshot = validate_wal_snapshot(wal_snapshot)
     destination = work / (name + '.tar.gz')
     try:
@@ -164,7 +166,9 @@ def archive_component(source, work, name, metadata, excludes=(), generated_image
                                 generated_image_caches=list(generated_image_caches),
                                 staged_capture=staged_capture,
                                 **({'local_capture': local_capture} if local_capture is not None else {}),
-                                **({'wal_snapshot': wal_snapshot} if wal_snapshot is not None else {}))
+                                **({'wal_snapshot': wal_snapshot} if wal_snapshot is not None else {}),
+                                **({'sqlite_validation_mirror': sqlite_validation_mirror}
+                                   if sqlite_validation_mirror is not None else {}))
         return {'name': name, 'source': metadata, **result}
     except SourceChangedError as error:
         diagnostic = work / (name + '-source-change.private.json')
@@ -200,6 +204,8 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
             validate_archive_timeout(item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS))
             validate_staged_capture(item.get('staged_capture', False))
             validate_local_capture(item.get('local_capture'), staged_capture=item.get('staged_capture', False))
+            validate_sqlite_validation_mirror(item.get('sqlite_validation_mirror'),
+                                             local_capture=item.get('local_capture'))
             validate_wal_snapshot(item.get('wal_snapshot'))
 
     os.umask(0o077)
@@ -265,7 +271,9 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                     archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
                     staged_capture=item.get('staged_capture', False),
                     **({'local_capture': item['local_capture']} if item.get('local_capture') is not None else {}),
-                    **({'wal_snapshot': item['wal_snapshot']} if item.get('wal_snapshot') is not None else {}))
+                    **({'wal_snapshot': item['wal_snapshot']} if item.get('wal_snapshot') is not None else {}),
+                    **({'sqlite_validation_mirror': item['sqlite_validation_mirror']}
+                       if item.get('sqlite_validation_mirror') is not None else {}))
                 manifest['components'].append(result)
                 print('Captured ' + item['name'], flush=True)
             manifest['metadata']['optional_sources_absent'] = []
@@ -279,7 +287,9 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                     archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
                     staged_capture=item.get('staged_capture', False),
                     **({'local_capture': item['local_capture']} if item.get('local_capture') is not None else {}),
-                    **({'wal_snapshot': item['wal_snapshot']} if item.get('wal_snapshot') is not None else {})))
+                    **({'wal_snapshot': item['wal_snapshot']} if item.get('wal_snapshot') is not None else {}),
+                    **({'sqlite_validation_mirror': item['sqlite_validation_mirror']}
+                       if item.get('sqlite_validation_mirror') is not None else {})))
                 print('Captured ' + item['name'], flush=True)
             manifest['components'].append(archive_component(state_root, work, 'kubernetes',
                 {'type': 'api', 'version': api.get('/version')['gitVersion']}))

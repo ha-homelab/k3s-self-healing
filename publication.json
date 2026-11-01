@@ -182,6 +182,7 @@
     "tests/test_restore.py",
     "tests/test_runner.py",
     "tests/test_smartthings_time_guard.py",
+    "tests/test_sqlite_validation_mirror.py",
     "tests/test_wal_snapshot.py",
     "tests/test_websocket_redirects.py",
     "tools/package_release.py",

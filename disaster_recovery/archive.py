@@ -45,7 +45,10 @@ import tempfile
 import time
 from typing import BinaryIO, Iterator
 
-from .local_capture import local_raw_capture, validate_local_capture
+from .local_capture import (
+    local_raw_capture, local_sqlite_mirror, validate_local_capture,
+    validate_sqlite_validation_mirror,
+)
 
 
 SQLITE_HEADER = b"SQLite format 3\x00"
@@ -437,6 +440,7 @@ def _snapshot_quiescent_sqlite(
 def _snapshot_sqlite_online(
     source_root: Path, relative: str, target: Path, deadline: float,
     *, wal_snapshot: dict | None = None, source_parent_fd: int | None = None,
+    validation_mirror=None,
 ) -> bool:
     """Read the actual source pathname so SQLite incorporates every committed WAL page."""
     wal_snapshot = validate_wal_snapshot(wal_snapshot)
@@ -493,15 +497,120 @@ def _snapshot_sqlite_online(
                     # Release the WAL checkpoint horizon before any NAS checks.
                     source.rollback()
             _check_deadline(deadline)
-            result = output.execute("PRAGMA quick_check").fetchall()
-            if result != [("ok",)]:
-                raise ArchiveError(f"SQLite integrity check failed: {relative}")
-            output.execute("PRAGMA journal_mode=DELETE")
-            return pinned
+            if validation_mirror is None:
+                result = output.execute("PRAGMA quick_check").fetchall()
+                if result != [("ok",)]:
+                    raise ArchiveError(f"SQLite integrity check failed: {relative}")
+                output.execute("PRAGMA journal_mode=DELETE")
+            else:
+                try:
+                    if output.execute("PRAGMA journal_mode=DELETE").fetchone() != ("delete",):
+                        raise ArchiveError(f"Cannot make SQLite snapshot standalone: {relative}")
+                except sqlite3.Error as error:
+                    # Private-output errors must never select a source fallback.
+                    raise ArchiveError(f"Cannot normalize SQLite snapshot: {relative}") from error
         finally:
-            output.close()
+            try:
+                output.close()
+            except sqlite3.Error as error:
+                if validation_mirror is not None:
+                    raise ArchiveError(f"Cannot close SQLite snapshot: {relative}") from error
+                raise
     finally:
         source.close()
+    if validation_mirror is not None:
+        try:
+            validation_mirror.capture(target, relative)
+        except sqlite3.Error as error:
+            raise ArchiveError(f"SQLite mirror validation failed: {relative}") from error
+    return pinned
+
+
+class _DigestReader:
+    def __init__(self, handle, deadline):
+        self.handle, self.deadline = handle, deadline
+        self.digest = hashlib.sha256()
+
+    def read(self, size=-1):
+        _check_deadline(self.deadline)
+        data = self.handle.read(size)
+        self.digest.update(data)
+        return data
+
+
+class _SQLiteMirror:
+    """Hold one validated local payload until those exact bytes enter the tar."""
+
+    def __init__(self, local_file, deadline):
+        self.file, self.deadline = local_file, deadline
+        self.signature = None
+        self.digest = None
+
+    def capture(self, target, relative):
+        _require_standalone_sqlite(target, relative)
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ArchiveError('SQLite snapshot is not a regular file')
+            reader = _DigestReader(source, self.deadline)
+            with self.file.writer() as output:
+                copied = _copy_stream(reader, output, self.deadline)
+            if (copied != before.st_size or _signature(before) != _signature(os.fstat(source.fileno()))
+                    or _signature(before) != _signature(target.stat(follow_symlinks=False))):
+                raise ArchiveError('SQLite snapshot changed during mirror copy')
+            self.digest = reader.digest.hexdigest()
+        # The bounded writer is closed before SQLite opens the private mirror.
+        with self.file.open('rb') as handle:
+            before = os.fstat(handle.fileno())
+            header = handle.read(20)
+            if header[:16] != SQLITE_HEADER or header[18:20] != b'\x01\x01':
+                # A read-only WAL connection can still create WAL/SHM files.
+                # Only open the normalized rollback-format private mirror.
+                raise ArchiveError(f'SQLite mirror is not standalone: {relative}')
+            connection = sqlite3.connect(self.file.path.as_uri() + '?mode=ro', uri=True)
+            try:
+                connection.set_progress_handler(lambda: 1 if time.monotonic() >= self.deadline else 0, 1000)
+                if connection.execute('PRAGMA quick_check').fetchall() != [('ok',)]:
+                    raise ArchiveError(f'SQLite mirror integrity check failed: {relative}')
+            finally:
+                connection.close()
+            _check_deadline(self.deadline)
+            _require_standalone_sqlite(self.file.path, relative)
+            if _signature(before) != _signature(os.fstat(handle.fileno())):
+                raise ArchiveError('SQLite mirror changed during validation')
+            with self.file.open('rb') as current:
+                if _signature(before) != _signature(os.fstat(current.fileno())):
+                    raise ArchiveError('SQLite mirror was replaced during validation')
+            self.signature = _signature(before)
+
+    def addfile(self, archive, info):
+        with self.file.open('rb') as payload:
+            before = os.fstat(payload.fileno())
+            if self.signature != _signature(before):
+                raise ArchiveError('Validated SQLite mirror changed before archiving')
+            info.size = before.st_size
+            reader = _DigestReader(payload, self.deadline)
+            archive.addfile(info, reader)
+            if (reader.digest.hexdigest() != self.digest
+                    or self.signature != _signature(os.fstat(payload.fileno()))):
+                raise ArchiveError('Validated SQLite mirror changed during archiving')
+            with self.file.open('rb') as current:
+                if self.signature != _signature(os.fstat(current.fileno())):
+                    raise ArchiveError('Validated SQLite mirror was replaced during archiving')
+        _check_deadline(self.deadline)
+        self.file.unlink()
+        self.signature = self.digest = None
+
+
+def _require_standalone_sqlite(target, relative):
+    for suffix in ('-wal', '-shm', '-journal'):
+        try:
+            value = Path(str(target) + suffix).lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(value.st_mode) or value.st_size:
+            raise ArchiveError(f'SQLite snapshot has an unexpected sidecar: {relative}')
 
 
 def _stable_wal_signature(root_fd: int, relative: str) -> tuple:
@@ -645,7 +754,7 @@ def _snapshot_sqlite(
     original: os.stat_result,
     target: Path,
     deadline: float,
-    *, wal_snapshot: dict | None = None,
+    *, wal_snapshot: dict | None = None, validation_mirror=None,
 ) -> tuple[str, tuple | None]:
     """Use the source's real pathname so SQLite can read its live WAL correctly."""
     _check_deadline(deadline)
@@ -664,11 +773,13 @@ def _snapshot_sqlite(
     method = "online"
     try:
         if wal_snapshot is None:
-            _snapshot_sqlite_online(source_root, relative, target, deadline)
+            _snapshot_sqlite_online(source_root, relative, target, deadline,
+                                    **({'validation_mirror': validation_mirror} if validation_mirror else {}))
         else:
             with _parent_fd(root_fd, relative) as (parent, _name):
                 if _snapshot_sqlite_online(source_root, relative, target, deadline,
-                                          wal_snapshot=wal_snapshot, source_parent_fd=parent):
+                                          wal_snapshot=wal_snapshot, source_parent_fd=parent,
+                                          **({'validation_mirror': validation_mirror} if validation_mirror else {})):
                     method = "pinned_wal"
     except sqlite3.OperationalError as error:
         error.add_note(f"SQLite snapshot source: {relative}")
@@ -725,6 +836,7 @@ def _create_archive_attempt(
     staged_capture: bool = False,
     local_capture: dict | None = None,
     wal_snapshot: dict | None = None,
+    sqlite_validation_mirror: dict | None = None,
 ) -> dict:
     parent = destination.parent
     metadata: dict = {
@@ -747,6 +859,9 @@ def _create_archive_attempt(
         with ExitStack() as resources:
             local = resources.enter_context(local_raw_capture(local_capture, source, destination,
                                                                lambda: _check_deadline(deadline))) if local_capture else None
+            mirror = _SQLiteMirror(resources.enter_context(local_sqlite_mirror(
+                sqlite_validation_mirror, source, destination, lambda: _check_deadline(deadline))),
+                deadline) if sqlite_validation_mirror else None
             scratch = resources.enter_context(tempfile.TemporaryDirectory(prefix=".ha-dr-archive-", dir=parent))
             temporary = Path(scratch)
             draft = temporary / "archive.tar.gz"
@@ -791,7 +906,8 @@ def _create_archive_attempt(
                                                                    **copy_options)
                         if is_sqlite:
                             method, guard = _snapshot_sqlite(source, root_fd, relative, original, staged, deadline,
-                                **({"wal_snapshot": wal_snapshot} if wal_snapshot is not None else {}))
+                                **({"wal_snapshot": wal_snapshot} if wal_snapshot is not None else {}),
+                                **({'validation_mirror': mirror} if mirror is not None else {}))
                             if method == "pinned_wal":
                                 metadata.setdefault("sqlite_pinned_wal_snapshots", []).append(relative)
                             if method == "stable_wal":
@@ -804,7 +920,11 @@ def _create_archive_attempt(
                                 relative + suffix for suffix in ("-wal", "-shm", "-journal")
                             )
                         info = _tar_info(relative, original)
-                        if memory is not None:
+                        if is_sqlite and mirror is not None and mirror.signature is not None:
+                            mirror.addfile(archive, info)
+                            staged.unlink()
+                            metadata.setdefault('sqlite_validation_mirrors', []).append(relative)
+                        elif memory is not None:
                             info.size = original.st_size
                             with memory:
                                 archive.addfile(info, memory)
@@ -876,12 +996,13 @@ def create_archive(
     staged_capture: bool = False,
     local_capture: dict | None = None,
     wal_snapshot: dict | None = None,
+    sqlite_validation_mirror: dict | None = None,
 ) -> dict:
     """Atomically publish a gzip tar and return its checksum and capture metadata.
 
     Destination must not already exist or be inside source. Scratch files live
     in destination.parent (the NAS workspace), except an explicitly configured
-    local raw tar. Publication uses a hard link
+    local raw tar or SQLite validation mirror. Publication uses a hard link
     on that same filesystem, so concurrent writers cannot replace an existing
     completed archive. Special files (devices, sockets, FIFOs) fail closed.
 
@@ -893,7 +1014,9 @@ def create_archive(
     up to three times under ONE shared deadline, then raises SourceChangedError.
     Ordinary files at most 8 MiB (64 MiB with staged capture) are staged in bounded
     memory to avoid a separate NAS write/read/unlink cycle. Only one payload is
-    retained at a time; SQLite and larger files always use NAS scratch.
+    retained at a time; SQLite backup and larger files use NAS scratch. An
+    opt-in SQLite validation mirror checks the closed standalone snapshot on
+    bounded local disk and supplies those exact validated bytes to the tar.
     Opt-in staged capture writes an uncompressed tar on private scratch,
     checks the source, then compresses only those captured bytes. The single
     deadline still covers all phases. This requires space for both tar and gzip.
@@ -911,6 +1034,8 @@ def create_archive(
     """
     validate_staged_capture(staged_capture)
     local_capture = validate_local_capture(local_capture, staged_capture=staged_capture)
+    sqlite_validation_mirror = validate_sqlite_validation_mirror(sqlite_validation_mirror,
+                                                                local_capture=local_capture)
     wal_snapshot = validate_wal_snapshot(wal_snapshot)
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
@@ -936,7 +1061,8 @@ def create_archive(
         try:
             metadata = _create_archive_attempt(source, destination, exclusions, deadline, groups,
                                                staged_capture=staged_capture, local_capture=local_capture,
-                                               wal_snapshot=wal_snapshot)
+                                               wal_snapshot=wal_snapshot,
+                                               sqlite_validation_mirror=sqlite_validation_mirror)
             metadata["attempts"] = attempt
             return metadata
         except (SourceChangedError, FileNotFoundError) as error:
