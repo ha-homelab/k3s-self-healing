@@ -18,6 +18,13 @@ Adopt the verified source through the locked dependency workflow. No profile
 changes are required. Previously rejected archives can be checked with the
 updated verifier, but verification alone does not promote incomplete snapshots.
 
+### Security
+
+Escape sequences remain literal filename bytes. Absolute paths, traversal,
+unsupported backslashes and unsafe link chains retain their existing rejection
+or skip behavior. Platform checks prevent native path interpretation from
+changing the meaning of accepted names during extraction.
+
 ## [0.1.17] - 2026-11-01
 
 ### Added
