@@ -73,3 +73,55 @@ Update these declarations when production functions move or are renamed.
 They prove that the selected code is instrumented; they do not prove
 exhaustive path coverage. Keep positive and rejected-input corpus cases
 and independent semantic assertions alongside the existing unit tests.
+
+## Artifact selection and retries
+
+Release artifacts use `-run-<run_id>-attempt-<run_attempt>` names, and the collector selects only the current run and attempt.
+
+Before publication starts, use **Re-run all jobs** only if the allocator and
+release policy permit reuse of that run's reservation. Recreate every required
+input in the same attempt; failed-only or individual retries can leave inputs
+missing, and older artifacts must not fill those gaps.
+
+For a fresh candidate or final build, once publication has started
+(`begin_publication`), or its external publication result is partial or uncertain,
+inspect the existing release, tags and assets before retrying. A consumed build
+number requires a new workflow run and reservation authorized by the release
+policy; an existing immutable tag may also require a new base version. Never
+reset the release ledger, overwrite assets or retag to force a retry. Historical
+byte promotion of an accepted RC keeps its reserved number and follows the
+existing promotion policy.
+
+Fuzzing still requires an explicit RC dispatch from the default branch of a public repository. Its report identifies one source revision and run; it does not prove complete platform coverage or device acceptance. Package receipts additionally bind fresh package publication to the current repository, source SHA, run ID and attempt. Historical promotion and retained-evidence validation keep their existing checks; complete package-set coverage remains a separate requirement. See [the shared evidence contract](rc-fuzzing.md).
+
+### Package receipt identity
+
+Fresh publication verifies each staged package receipt against the independently
+supplied repository, source commit, workflow run and attempt. Receipts created
+before this migration, or offline without an Actions identity, cannot qualify a
+fresh publication. Run all required producers in one complete workflow attempt
+after migration; an earlier attempt cannot fill missing inputs.
+
+Historical promotion and retained-evidence validation keep their existing checks.
+Receipt coverage validates the staged files; the expected packages and platforms
+still require a separate completeness check. Existing release approval and device
+acceptance policies continue to apply.
+
+See the shared [receipt migration guide](https://github.com/victron-venus/venus-os-ci-toolkit/blob/main/docs/release-workflow.md#migrate-package-receipt-identity-without-replacing-the-release-engine).
+
+### Complete package producer inventory
+
+`versioning.required_build_receipts` declares the exact package and signature
+receipt filenames required by this project's final publisher. Each authenticated
+receipt must match the repository, source commit, workflow run and attempt. A
+missing producer or an unexpected receipt stops fresh publication, even when the
+remaining packages are valid. RC fuzz evidence is checked separately; pre-signing
+checks do not require a signature receipt that has not been created yet.
+
+Before publication begins, rerun all required producers only when the allocator
+and release policy permit reusing that reservation. After publication begins or
+its outcome is uncertain, inspect existing tags, releases and assets before a
+policy-authorized new run; never reset the ledger or mix earlier-attempt packages.
+Historical RC promotion keeps its accepted source policy. Keep this explicit
+inventory aligned with producer changes; it does not replace package-format,
+signature or device acceptance checks.

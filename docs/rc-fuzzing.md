@@ -195,7 +195,7 @@ target inventory, budgets and outcomes. Schema 2 additionally retains positive
 engine execution counts, available coverage/interesting-input metrics and
 Python instrumentation evidence. Verification remains compatible with existing
 schema-1 releases. Engine counters are not a claim of total application coverage.
-`release-assets-fuzz` retains it for 90
+`release-assets-fuzz-run-<run_id>-attempt-<run_attempt>` retains it for 90
 days and the candidate publisher includes it in the release asset inventory.
 Projects with signed releases include the report in their signed inventory.
 The report is covered by `release-inputs-fuzz.json`, which binds it to the same

@@ -115,6 +115,44 @@ class CurrentBuildInputsTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
 
+    def test_actions_receipt_records_complete_producer_identity(self):
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                        "GITHUB_REPOSITORY": "example/project", "GITHUB_RUN_ID": "123",
+                        "GITHUB_RUN_ATTEMPT": "2"}):
+            result = self.create()
+        expected = version_receipt.producer_identity("example/project", 123, 2, "a" * 40)
+        self.assertEqual(result["producer"], expected)
+        version_receipt.verify_receipt_evidence(result, self.plan, self.output.name,
+                                                self.policy, expected)
+        for changed in ({"run_id": 124}, {"run_attempt": 1},
+                        {"repository": "other/project"}, {"source_sha": "b" * 40}):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "producer attempt"):
+                version_receipt.verify_receipt_evidence(
+                    {**result, "producer": {**expected, **changed}},
+                    self.plan, self.output.name, self.policy, expected)
+
+
+    def test_expected_producer_rejects_missing_or_ambiguous_identity(self):
+        result = self.create()
+        expected = version_receipt.producer_identity("example/project", 123, 2, "a" * 40)
+        for bad in (None, {}, {**expected, "unexpected": 1}, {**expected, "run_attempt": True}):
+            with self.subTest(producer=bad), self.assertRaisesRegex(ValueError, "producer identity"):
+                version_receipt.verify_receipt_evidence(
+                    {**result, "producer": bad}, self.plan, self.output.name,
+                    self.policy, expected)
+
+
+    def test_actions_receipt_rejects_missing_or_invalid_environment(self):
+        for changed in ({"GITHUB_RUN_ID": ""}, {"GITHUB_RUN_ATTEMPT": "0"},
+                        {"GITHUB_RUN_ATTEMPT": "01"}, {"GITHUB_REPOSITORY": ""}):
+            env = {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "example/project",
+                   "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2", **changed}
+            with self.subTest(changed=changed), patch.dict(os.environ, env):
+                with self.assertRaisesRegex(ValueError, "producer identity"):
+                    self.create()
+            self.assertFalse(self.output.exists())
+
+
     def test_publisher_rejects_mutated_receipt_identity_and_coverage(self):
         original = self.create()
         artifact = original["artifacts"][0]
@@ -287,6 +325,51 @@ class CurrentBuildInputsTests(unittest.TestCase):
             self.create()
         self.assertTrue(self.output.is_file())
 
+    def test_presigning_checks_do_not_require_the_future_signature_receipt(self):
+        self.policy["versioning"]["required_build_receipts"] = [
+            "release-inputs-linux.json", "release-inputs-signature.json",
+        ]
+        self.create()
+        payloads = [{"name": p.name, "size": p.stat().st_size,
+                     "sha256": version_receipt.sha256(p.read_bytes())}
+                    for p in self.assets.iterdir()]
+        authenticated = version_receipt.verify_receipts(
+            self.assets, self.plan, payloads, self.policy)
+        self.assertEqual(len(authenticated), 1)
+        with self.assertRaisesRegex(ValueError, "missing=.*release-inputs-signature"):
+            version_receipt.verify_required_build_receipts(authenticated, self.policy)
+
+
+
+
+class RequiredBuildReceiptsTests(unittest.TestCase):
+    def test_legacy_policy_keeps_its_existing_contract(self):
+        version_receipt.verify_required_build_receipts([], {"versioning": {}})
+
+    def test_exact_unordered_package_and_signature_set_is_required(self):
+        policy = {"versioning": {"required_build_receipts": [
+            "release-inputs-linux.json", "release-inputs-signature.json",
+        ]}}
+        receipts = [{"name": "release-inputs-signature.json"},
+                    {"name": "release-inputs-linux.json"}]
+        version_receipt.verify_required_build_receipts(receipts, policy)
+        for invalid in (receipts[:1], receipts + [{"name": "release-inputs-extra.json"}]):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "inventory differs"):
+                version_receipt.verify_required_build_receipts(invalid, policy)
+        with self.assertRaisesRegex(ValueError, "Duplicate authenticated"):
+            version_receipt.verify_required_build_receipts(receipts + receipts[:1], policy)
+
+    def test_malformed_or_ambiguous_policy_names_are_rejected(self):
+        invalid = (None, True, 1, "release-inputs-linux.json", {}, [],
+                   [None], [True], [123], ["release-inputs-linux.json"] * 2,
+                   ["../release-inputs-linux.json"], ["/release-inputs-linux.json"],
+                   ["release-inputs-sub/linux.json"], ["release-inputs-sub\\linux.json"],
+                   ["release-inputs-linüx.json"], ["release-inputs-linux.json\n"],
+                   ["release-inputs-linux.JSON"], ["release-inputs-fuzz.json"])
+        for names in invalid:
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                version_receipt.verify_required_build_receipts(
+                    [], {"versioning": {"required_build_receipts": names}})
 
 if __name__ == "__main__":
     unittest.main()

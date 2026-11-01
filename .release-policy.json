@@ -40,10 +40,13 @@
         "member": "k3s-self-healing/SOURCE_VERSION",
         "value": "package"
       }
+    ],
+    "required_build_receipts": [
+      "release-inputs-package.json"
     ]
   },
   "fuzzing": {
-    "toolkit_ref": "6b2d99519d513d2b871d2a845ddd6134dea4af2c"
+    "toolkit_ref": "6f0bf114a398f9c2b7e5407042c3828a8cc28b40"
   },
   "release_contract_python": "3.14"
 }
