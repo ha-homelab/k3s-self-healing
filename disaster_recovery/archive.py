@@ -291,6 +291,27 @@ def _tree_signatures(
     return signatures
 
 
+def _staged_entries(entries: list[tuple[str, os.stat_result]]) -> list[tuple[str, os.stat_result]]:
+    """Read recently changed regular-file families late, always base before sidecar."""
+    regular = {name: value for name, value in entries if stat.S_ISREG(value.st_mode)}
+    families: dict[str, list[tuple[str, os.stat_result]]] = {}
+    for name, value in regular.items():
+        base = name
+        while True:
+            parent = next((base[:-len(suffix)] for suffix in ("-wal", "-shm", "-journal")
+                           if base.endswith(suffix) and base[:-len(suffix)] in regular), None)
+            if parent is None:
+                break
+            base = parent
+        families.setdefault(base, []).append((name, value))
+    ordered = [entry for entry in entries if not stat.S_ISREG(entry[1].st_mode)]
+    for base in sorted(families, key=lambda name: (
+            max(value.st_mtime_ns for _, value in families[name]), name)):
+        # Prefixes sort before their suffixes, including transitive sidecar names.
+        ordered.extend(sorted(families[base], key=lambda entry: entry[0]))
+    return ordered
+
+
 def _copy_stream(source: BinaryIO, target: BinaryIO, deadline: float) -> int:
     length = 0
     while True:
@@ -736,6 +757,7 @@ def _create_archive_attempt(
             staged = temporary / "file"
             skipped_sidecars: set[str] = set()
             quiescent_guards: dict[str, tuple] = {}
+            captured_regular: dict[str, os.stat_result] = {}
             names = ["."]
             copy_options = {"memory_limit": STAGED_MEMORY_FILE_LIMIT} if staged_capture else {}
             raw_writer = resources.enter_context(local.writer()) if local is not None else None
@@ -745,7 +767,7 @@ def _create_archive_attempt(
                 root_info = _tar_info(".", root_metadata)
                 root_info.type = tarfile.DIRTYPE
                 archive.addfile(root_info)
-                for relative, initial in entries:
+                for relative, initial in _staged_entries(entries) if staged_capture else entries:
                     _check_deadline(deadline)
                     if relative in skipped_sidecars:
                         continue
@@ -791,6 +813,8 @@ def _create_archive_attempt(
                             with staged.open("rb") as payload:
                                 archive.addfile(info, payload)
                             staged.unlink()
+                        if not is_sqlite:
+                            captured_regular[relative] = original
                         metadata["files"] += 1
                         metadata["uncompressed_bytes"] += info.size
                     else:
@@ -805,7 +829,8 @@ def _create_archive_attempt(
             for relative, guard in quiescent_guards.items():
                 _require_quiescent_sqlite(root_fd, relative, guard)
             sqlite_paths = set(metadata["sqlite_databases"])
-            before = _tree_signatures([(".", root_metadata), *entries], sqlite_paths)
+            expected_entries = [(name, captured_regular.get(name, value)) for name, value in entries]
+            before = _tree_signatures([(".", root_metadata), *expected_entries], sqlite_paths)
             after = _tree_signatures([(".", os.fstat(root_fd)), *current_entries], sqlite_paths)
             if before != after:
                 raise SourceChangedError("Source tree changed during component capture: " + _tree_change_details(before, after))
@@ -860,8 +885,11 @@ def create_archive(
     on that same filesystem, so concurrent writers cannot replace an existing
     completed archive. Special files (devices, sockets, FIFOs) fail closed.
 
-    Ordinary source files and tree membership must be unchanged between the
-    initial inventory and final check. A changed tree retries the whole component
+    Ordinary source files must match their successful copy at the final check;
+    membership and directory/symlink/SQLite identities retain their initial
+    inventory guards. This observes coexisting ordinary payloads at the end of
+    copying, not an atomic filesystem or cross-database transaction. A changed
+    tree retries the whole component
     up to three times under ONE shared deadline, then raises SourceChangedError.
     Ordinary files at most 8 MiB (64 MiB with staged capture) are staged in bounded
     memory to avoid a separate NAS write/read/unlink cycle. Only one payload is

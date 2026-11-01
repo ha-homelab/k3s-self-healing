@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.16] - 2026-11-01
+
+### Changed
+
+- Compare ordinary files against their successful capture at the final source
+  scan, avoiding unnecessary whole-component retries for changes before copying.
+  Changes during or after copying still fail the existing consistency checks.
+- In staged capture, read recently modified regular-file families later while
+  keeping every database base before its sidecars. Direct ordering is unchanged.
+  Member inventory, directory/symlink and SQLite guards, deadlines, retry limits
+  and verified NAS publication remain in place.
+
+### Upgrade
+
+Adopt the verified source through the locked dependency workflow. The ordinary
+file contract now describes observed end-of-copy state rather than unchanged
+initial inventory; it does not promise an atomic filesystem snapshot. Read the
+capture-time file classification and scheduling limits in the recovery guide.
+No profile changes or additional permissions are required.
+
+### Security
+
+Ordinary files remain protected by descriptor/path identity and full metadata
+checks during copying and at the final scan. A replacement before safe open is
+accepted only if the captured version remains stable. No required data is
+excluded; source access, scratch limits and atomic publication are unchanged.
+
 ## [0.1.15] - 2026-10-31
 
 ### Added

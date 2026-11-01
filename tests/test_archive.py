@@ -582,7 +582,7 @@ class ArchiveTests(unittest.TestCase):
             result = archive.create_archive(self.source, self.destination)
         self.assertTrue(lengths)
         self.assertLessEqual(max(lengths), archive.MEMORY_FILE_LIMIT)
-        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(result["attempts"], 1)
         with tarfile.open(self.destination) as captured:
             self.assertEqual(captured.extractfile("growing.json").read(), source.read_bytes())
 
@@ -625,10 +625,10 @@ class ArchiveTests(unittest.TestCase):
 
         with patch.object(archive, "_copy_stream", side_effect=mutate_once):
             result = archive.create_archive(self.source, self.destination)
-        # The initial attempt re-reads the changed file, then rejects the changed
-        # tree. A second component attempt captures a wholly stable inventory.
-        self.assertEqual(calls, 3)
-        self.assertEqual(result["attempts"], 2)
+        # The per-file retry captured the complete stable version. Its successful
+        # copy supplies the baseline, so no extra component attempt is needed.
+        self.assertEqual(calls, 2)
+        self.assertEqual(result["attempts"], 1)
         with tarfile.open(self.destination) as captured:
             self.assertEqual(captured.extractfile("state.json").read(), source.read_bytes())
 

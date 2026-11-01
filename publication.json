@@ -152,6 +152,7 @@
     "scripts/write_web_build_metadata.py",
     "tests/test_administrative_redirects.py",
     "tests/test_archive.py",
+    "tests/test_capture_consistency.py",
     "tests/test_core_backup_failure.py",
     "tests/test_core_preflight.py",
     "tests/test_core_update_approval.py",
