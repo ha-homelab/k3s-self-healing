@@ -717,6 +717,29 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
         self.gh.save_completed_evidence(raw)
         return result, plan, json.loads(raw)
 
+    def test_partial_rerun_rejects_prior_attempt_package_before_publication(self):
+        lifecycle.prepare(self.args)
+        self.build_current()
+        self.gh.runs[99]["run_attempt"] = 2
+        os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+        ledger = copy.deepcopy(self.gh.ledger)
+        with self.assertRaisesRegex(ValueError, "different package producer attempt"):
+            lifecycle.publish_versioned(self.args)
+        self.assertEqual(self.gh.writes, [])
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertFalse(rc.EVIDENCE.exists())
+
+
+    def test_complete_current_attempt_packages_publish_normally(self):
+        self.gh.runs[99]["run_attempt"] = 2
+        os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+        lifecycle.prepare(self.args)
+        self.build_current()
+        result = lifecycle.publish_versioned(self.args)
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(json.loads(rc.EVIDENCE.read_bytes())["run_attempt"], 2)
+
+
     def declare_json_artifact(self):
         self.policy["versioning"]["artifacts"] = [
             {
@@ -1614,6 +1637,108 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
             ) as run:
                 rc.GitHub(REPO).upload("v1.2.3-beta.1", path, release_id=11)
             self.assertEqual(run.call_args.args[0][1:3], ["api", "--hostname"])
+
+    def require_build_receipts(self, names):
+        self.policy["versioning"]["required_build_receipts"] = names
+        self.gh.source_policies[SHA] = copy.deepcopy(self.policy)
+        (self.root / ".release-policy.json").write_bytes(rc.json_bytes(self.policy))
+
+    def add_windows_package(self):
+        assets = Path(self.args.assets)
+        with tempfile.TemporaryDirectory(dir=self.root) as directory:
+            package = Path(directory)
+            (package / "windows.bin").write_bytes(b"synthetic Windows package")
+            receipt.create_receipt(lifecycle.PLAN, self.root / ".release-inputs.json",
+                                   package, package / "release-inputs-windows.json")
+            for path in package.iterdir():
+                (assets / path.name).write_bytes(path.read_bytes())
+
+    def test_partial_current_attempt_missing_platform_fails_before_publication(self):
+        self.require_build_receipts(["release-inputs-linux.json", "release-inputs-windows.json"])
+        lifecycle.prepare(self.args)
+        self.build_current()
+        self.add_windows_package()
+        self.gh.runs[99]["run_attempt"] = 2
+        os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+        (self.root / "version").write_text("1.2.3\n")
+        self.args.assets = str(self.root / "attempt-2")
+        lifecycle.prepare(self.args)
+        self.build_current()
+        ledger = copy.deepcopy(self.gh.ledger)
+        with patch.object(rc, "verify_required_signatures") as signatures:
+            with self.assertRaisesRegex(ValueError, "missing=.*release-inputs-windows"):
+                lifecycle.publish_versioned(self.args)
+        signatures.assert_not_called()
+        self.assertEqual(self.gh.writes, [])
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertFalse(rc.EVIDENCE.exists())
+
+    def test_complete_declared_attempt_two_rebuild_publishes(self):
+        self.require_build_receipts(["release-inputs-linux.json", "release-inputs-windows.json"])
+        lifecycle.prepare(self.args)
+        first_plan = self.build_current()
+        self.add_windows_package()
+        writes = copy.deepcopy(self.gh.ledger_writes)
+        self.gh.runs[99]["run_attempt"] = 2
+        os.environ["GITHUB_RUN_ATTEMPT"] = "2"
+        (self.root / "version").write_text("1.2.3\n")
+        self.args.assets = str(self.root / "attempt-2")
+        lifecycle.prepare(self.args)
+        self.assertEqual(self.gh.ledger_writes, writes)
+        self.assertEqual(self.build_current(), first_plan)
+        self.add_windows_package()
+        result = lifecycle.publish_versioned(self.args)
+        self.assertEqual(result["status"], "published")
+        manifest = json.loads(rc.EVIDENCE.read_bytes())
+        self.assertEqual(manifest["run_attempt"], 2)
+        self.assertEqual({r["name"] for r in manifest["build_receipts"]},
+                         {"release-inputs-linux.json", "release-inputs-windows.json"})
+
+    def test_unexpected_authenticated_package_receipt_blocks_publication(self):
+        self.require_build_receipts(["release-inputs-linux.json"])
+        lifecycle.prepare(self.args)
+        self.build_current()
+        self.add_windows_package()
+        ledger = copy.deepcopy(self.gh.ledger)
+        with self.assertRaisesRegex(ValueError, "unexpected=.*release-inputs-windows"):
+            lifecycle.publish_versioned(self.args)
+        self.assertEqual(self.gh.writes, [])
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertFalse(rc.EVIDENCE.exists())
+
+    def test_complete_receipt_names_do_not_authorize_a_previous_attempt(self):
+        self.require_build_receipts(["release-inputs-linux.json"])
+        self.test_partial_rerun_rejects_prior_attempt_package_before_publication()
+
+    def test_validation_receipt_cannot_satisfy_required_build_inventory(self):
+        policy = {"versioning": {"required_build_receipts": ["release-inputs-linux.json"]}}
+        packages = [{"name": "release-inputs-linux.json"}]
+        validation = [{"name": "release-inputs-fuzz.json"}]
+        receipt.verify_required_build_receipts(packages, policy)
+        with self.assertRaisesRegex(ValueError, "unexpected=.*release-inputs-fuzz"):
+            receipt.verify_required_build_receipts(packages + validation, policy)
+        with self.assertRaisesRegex(ValueError, "missing=.*release-inputs-linux"):
+            receipt.verify_required_build_receipts(validation, policy)
+
+    def test_historical_promotion_keeps_the_accepted_source_policy(self):
+        self.policy["versioning"]["promotion"] = "promote-bytes"
+        self.require_build_receipts(["release-inputs-linux.json"])
+        candidate, _, manifest = self.release_run("rc", 100)
+        raw = rc.EVIDENCE.read_bytes()
+        self.gh.jobs_by_run[100] = copy.deepcopy(self.gh.jobs)
+        self.start_run("stable", 101, candidate["tag"])
+        self.assertEqual(lifecycle.prepare(self.args)["build"], "false")
+        args = argparse.Namespace(repo=REPO, rc=candidate["tag"], run_id="101")
+        with patch.object(rc, "GitHub", return_value=self.gh), patch.object(
+            lifecycle, "verify_required_build_receipts",
+            side_effect=AssertionError("Historical promotion must not run the fresh publisher"),
+        ):
+            result = rc.promote(args)
+        release_id = next(k for k, v in self.gh.releases.items() if v["tag_name"] == result["tag"])
+        published = {x["name"]: self.gh.files[x["id"]] for x in self.gh.assets[release_id]}
+        self.assertEqual(published[rc.MANIFEST], raw)
+        self.assertEqual(manifest["source_policy"]["data"]["versioning"]["required_build_receipts"],
+                         ["release-inputs-linux.json"])
 
 
 class PreparationTests(unittest.TestCase):

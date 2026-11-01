@@ -34,6 +34,53 @@ DETACHED_PROVENANCE_REQUIRED = False
 MAX_RECEIPT_BYTES = 2_000_000
 
 
+def producer_identity(
+    repository: str, run_id: int, run_attempt: int, source_sha: str
+) -> dict[str, object]:
+    """Validate the independently supplied workflow identity of a package."""
+    if (
+        not isinstance(repository, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+        or any(part in {".", ".."} for part in repository.split("/"))
+        or type(run_id) is not int or run_id <= 0
+        or type(run_attempt) is not int or run_attempt <= 0
+        or not isinstance(source_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+    ):
+        raise ValueError("Invalid package producer identity")
+    return {
+        "repository": repository, "run_id": run_id,
+        "run_attempt": run_attempt, "source_sha": source_sha,
+    }
+
+
+def current_producer(source_sha: str) -> dict[str, object] | None:
+    """Capture Actions identity; local package inspection remains offline."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return None
+    values = [os.environ.get(name, "") for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")]
+    if any(not re.fullmatch(r"[1-9][0-9]*", value) for value in values):
+        raise ValueError("Missing or invalid Actions package producer identity")
+    return producer_identity(
+        os.environ.get("GITHUB_REPOSITORY", ""), int(values[0]), int(values[1]), source_sha
+    )
+
+
+def verify_producer_identity(
+    receipt: dict[str, object], expected: dict[str, object]
+) -> None:
+    """Reject missing, malformed or mismatched package execution identity."""
+    producer = receipt.get("producer")
+    if not isinstance(producer, dict) or set(producer) != set(expected):
+        raise ValueError("Receipt lacks current package producer identity")
+    checked = producer_identity(
+        producer["repository"], producer["run_id"],
+        producer["run_attempt"], producer["source_sha"],
+    )
+    if checked != expected:
+        raise ValueError("Receipt belongs to a different package producer attempt")
+
+
 def sha256(data: bytes) -> str:
     """Hash an immutable build input or payload."""
     return hashlib.sha256(data).hexdigest()
@@ -124,6 +171,9 @@ def create_receipt(
         "artifacts": packages,
         "toolchain": capture_toolchain(),
     }
+    producer = current_producer(cast(str, plan["source_sha"]))
+    if producer is not None:
+        result["producer"] = producer
     verify_current_inputs(
         plan_path.parent, cast(list[dict[str, object]], evidence["files"])
     )
@@ -167,12 +217,15 @@ def verify_receipt_evidence(
     plan: dict[str, object],
     name: str,
     policy: dict[str, object] | None,
+    expected_producer: dict[str, object] | None = None,
 ) -> None:
     """Validate a receipt's source, toolchain and frozen version projections."""
     if receipt.get("plan_sha256") != version_plan.plan_digest(plan):
         raise ValueError(f"Build used a different release plan: {name}")
     if receipt.get("source_sha") != plan["source_sha"] or not receipt.get("files"):
         raise ValueError("Receipt lacks source-bound version input evidence")
+    if expected_producer is not None:
+        verify_producer_identity(receipt, expected_producer)
     if not isinstance(receipt.get("toolchain"), dict) or not cast(
         dict[str, object], receipt["toolchain"]
     ).get("python"):
@@ -221,6 +274,7 @@ def verify_receipts(
     plan: dict[str, object],
     payloads: list[dict[str, object]],
     policy: dict[str, object] | None = None,
+    expected_producer: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Require exactly one plan-bound build receipt for every staged payload."""
     expected = {cast(str, entry["name"]): entry for entry in payloads}
@@ -239,7 +293,7 @@ def verify_receipts(
         if len(raw) > MAX_RECEIPT_BYTES:
             raise ValueError("Oversized build receipt")
         receipt = cast(dict[str, object], json.loads(raw))
-        verify_receipt_evidence(receipt, plan, name, policy)
+        verify_receipt_evidence(receipt, plan, name, policy, expected_producer)
         cover_receipt_artifacts(receipt, expected, receipts, covered)
         results.append({"name": name, "sha256": sha256(raw), "inputs": receipt})
     if covered != set(expected) - receipts:
@@ -252,6 +306,24 @@ def verify_receipts(
 
         verify_all(directory, policy, plan, payloads)
     return results
+
+
+def verify_required_build_receipts(
+    receipts: list[dict[str, object]], policy: dict[str, object],
+) -> None:
+    """Require the source-declared package/signature set after RC evidence is split."""
+    required = version_plan.required_build_receipts(cast(dict[str, object], policy["versioning"]))
+    if required is None:
+        return
+    names = [cast(str, item["name"]) for item in receipts]
+    if len(set(names)) != len(names):
+        raise ValueError("Duplicate authenticated build receipts")
+    if set(names) != set(required):
+        raise ValueError(
+            "Build receipt inventory differs from source policy: "
+            f"missing={sorted(set(required) - set(names))}, "
+            f"unexpected={sorted(set(names) - set(required))}"
+        )
 
 
 def validate_input_fields(

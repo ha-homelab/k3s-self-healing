@@ -55,7 +55,7 @@ jobs:
       run: python3 scripts/stage_release_assets.py --target package --pattern 'release-dist/*'
     - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: release-assets
+        name: release-assets-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
         path: release-assets/package/*
         if-no-files-found: error
         retention-days: 14

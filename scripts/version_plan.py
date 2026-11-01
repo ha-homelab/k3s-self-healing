@@ -209,6 +209,22 @@ def _input_declaration(item):
         require("package" not in item, f"{kind} does not accept package")
 
 
+def required_build_receipts(config: dict[str, object]) -> set[str] | None:
+    """Validate the optional exact package/signature receipt inventory."""
+    if "required_build_receipts" not in config:
+        return None
+    names = config["required_build_receipts"]
+    if (
+        not isinstance(names, list) or not names
+        or any(not isinstance(name, str)
+               or not re.fullmatch(r"release-inputs-[A-Za-z0-9._-]+\.json", name, re.ASCII)
+               or name == "release-inputs-fuzz.json" for name in names)
+    ):
+        raise VersionError("required_build_receipts must be nonempty ASCII package receipt filenames")
+    require(len(set(names)) == len(names), "required_build_receipts contains duplicate filenames")
+    return set(names)
+
+
 def validate_policy(policy: object) -> dict[str, object]:
     """Validate only this extension; the release engine owns the outer policy."""
     require(isinstance(policy, dict), "Policy must be an object")
@@ -219,6 +235,7 @@ def validate_policy(policy: object) -> dict[str, object]:
         "promotion",
         "files",
         "artifacts",
+        "required_build_receipts",
         "build_number_floor",
         "toolkit_revision",
     }
@@ -244,6 +261,7 @@ def validate_policy(policy: object) -> dict[str, object]:
         isinstance(config.get("files"), list) and config["files"],
         "Policy requires explicit version files",
     )
+    required_build_receipts(config)
     selectors = set()
     for item in config["files"]:
         _declaration(item)
