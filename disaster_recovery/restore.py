@@ -29,6 +29,7 @@ CHUNK_SIZE = 1024 * 1024
 SQLITE_HEADER = b"SQLite format 3\x00"
 BASENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
+UNSUPPORTED_BACKSLASH = re.compile(r"\\(?!x[0-9a-fA-F]{2})")
 
 
 class RestoreError(ValueError):
@@ -65,7 +66,8 @@ def _basename(value: Any, *, component: bool = False) -> str:
 
 
 def _relative(value: Any, *, allow_root: bool = False) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
+    """Shared capture/restore policy; hex escapes are literal, never decoded."""
+    if not isinstance(value, str) or not value or UNSUPPORTED_BACKSLASH.search(value):
         raise RestoreError("Archive contains an unsafe member path")
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise RestoreError("Archive contains an unsafe member path")
@@ -108,7 +110,7 @@ def _check_digest(archive: Archive) -> None:
 
 def _link_target(path: str, target: str, *, hardlink: bool) -> tuple[str | None, str | None]:
     """Resolve a link within its component without touching the filesystem."""
-    if not target or "\\" in target or any(ord(c) < 32 or ord(c) == 127 for c in target):
+    if not target or UNSUPPORTED_BACKSLASH.search(target) or any(ord(c) < 32 or ord(c) == 127 for c in target):
         return None, "invalid_target"
     link = PurePosixPath(target)
     if link.is_absolute() or re.match(r"^[A-Za-z]:", target):
@@ -325,6 +327,17 @@ def _write_report(destination: Path, report: dict[str, Any]) -> None:
         os.fchmod(output.fileno(), 0o600)
 
 
+def _check_extraction_platform(archives: list[Archive]) -> None:
+    # A native Windows Path interprets even a literal \\xNN as a separator.
+    # Reject before creating anything, rather than changing archived names.
+    if os.name != "posix" and any(
+        "\\" in member["path"] or (
+            "skip_reason" not in member and "\\" in member.get("link_target", ""))
+        for archive in archives for member in archive.members
+    ):
+        raise RestoreError("Literal hex-escaped paths require POSIX extraction")
+
+
 def verify_snapshot(snapshot: Path | str, extract_to: Path | str | None = None) -> dict[str, Any]:
     """Verify a snapshot; optionally extract into a new directory outside it.
 
@@ -401,6 +414,7 @@ def verify_snapshot(snapshot: Path | str, extract_to: Path | str | None = None) 
             ],
         }
         if destination is not None:
+            _check_extraction_platform(archives)
             try:
                 destination.mkdir(mode=0o700, exist_ok=False)
             except OSError as exc:

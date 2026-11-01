@@ -29,6 +29,51 @@ class ArchiveTests(unittest.TestCase):
         self.output.mkdir()
         self.destination = self.output / "component.tar.gz"
 
+    def test_literal_hex_unit_name_roundtrips_through_writer_and_restore(self):
+        unit = r"example\x2ddata.mount"
+        (self.source / unit).write_bytes(b"[Mount]\n")
+        (self.source / "alias").symlink_to(unit)
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                snapshot = self.output / str(staged)
+                snapshot.mkdir()
+                metadata = archive.create_archive(self.source, snapshot / "component.tar.gz",
+                                                  staged_capture=staged)
+                (snapshot / "manifest.json").write_text(json.dumps({
+                    "format_version": 1, "completed": True,
+                    "components": [{"name": "fixture", **metadata}],
+                }))
+                destination = self.root / ("restored-" + str(staged))
+                verify_snapshot(snapshot, destination)
+                self.assertEqual((destination / "fixture" / unit).read_bytes(), b"[Mount]\n")
+                self.assertEqual(os.readlink(destination / "fixture/alias"), unit)
+
+    def test_unsupported_member_names_fail_before_payload_or_scratch(self):
+        (self.source / "a-valid").write_bytes(b"not copied")
+        for name in (r"bad\name", r"bad\xGG", "bad\nname", "C:drive"):
+            with self.subTest(name=name):
+                invalid = self.source / name
+                invalid.write_bytes(b"not copied")
+                try:
+                    with patch.object(archive, "_copy_regular") as copy, \
+                            patch.object(archive.tempfile, "TemporaryDirectory") as scratch:
+                        with self.assertRaisesRegex(archive.ArchiveError, "unsupported archive member path"):
+                            archive.create_archive(self.source, self.destination)
+                        copy.assert_not_called()
+                        scratch.assert_not_called()
+                    self.assertEqual(list(self.output.iterdir()), [])
+                finally:
+                    invalid.unlink()
+
+    def test_excluded_subtree_does_not_require_portable_member_names(self):
+        ignored = self.source / "ignored"
+        ignored.mkdir()
+        (ignored / r"unsupported\name").write_bytes(b"excluded")
+        (self.source / "keep").write_bytes(b"included")
+        archive.create_archive(self.source, self.destination, excludes=["ignored"])
+        with tarfile.open(self.destination) as captured:
+            self.assertEqual(captured.getnames(), [".", "keep"])
+
     def test_live_wal_database_becomes_valid_standalone_snapshot(self):
         database = self.source / "zigbee.db"
         live = sqlite3.connect(database)
