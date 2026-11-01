@@ -97,6 +97,22 @@ def validate_staged_capture(value: bool) -> bool:
     return value
 
 
+def validate_wal_snapshot(value):
+    if value is None:
+        return None
+    if (type(value) is not dict or set(value) != {"minimum_free_bytes"}
+            or type(value["minimum_free_bytes"]) is not int
+            or not 1 <= value["minimum_free_bytes"] <= 2 ** 63 - 1):
+        raise ValueError("wal_snapshot requires a positive integer minimum_free_bytes")
+    return dict(value)
+
+
+def _check_wal_space(source_parent_fd: int, minimum_free_bytes: int) -> None:
+    space = os.fstatvfs(source_parent_fd)
+    if space.f_bavail * space.f_frsize < minimum_free_bytes:
+        raise OSError("WAL snapshot source filesystem is below its free-space floor")
+
+
 def _normalize_excludes(excludes: list[str] | None) -> tuple[str, ...]:
     normalized = []
     for original in excludes or []:
@@ -398,9 +414,14 @@ def _snapshot_quiescent_sqlite(
 
 
 def _snapshot_sqlite_online(
-    source_root: Path, relative: str, target: Path, deadline: float
-) -> None:
+    source_root: Path, relative: str, target: Path, deadline: float,
+    *, wal_snapshot: dict | None = None, source_parent_fd: int | None = None,
+) -> bool:
     """Read the actual source pathname so SQLite incorporates every committed WAL page."""
+    wal_snapshot = validate_wal_snapshot(wal_snapshot)
+    if wal_snapshot is not None:
+        if source_parent_fd is None or not stat.S_ISDIR(os.fstat(source_parent_fd).st_mode):
+            raise ValueError("WAL snapshot requires a held source-directory descriptor")
     source_uri = (source_root / relative).as_uri() + "?mode=ro"
     source = sqlite3.connect(source_uri, uri=True, timeout=0.1)
     try:
@@ -412,10 +433,13 @@ def _snapshot_sqlite_online(
             )
 
             busy_since = None
+            pinned = False
 
             def progress(status: int, _remaining: int, _total: int) -> None:
                 nonlocal busy_since
                 _check_deadline(deadline)
+                if pinned:
+                    _check_wal_space(source_parent_fd, wal_snapshot["minimum_free_bytes"])
                 if status & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                     now = time.monotonic()
                     if busy_since is None:
@@ -426,12 +450,33 @@ def _snapshot_sqlite_online(
                     # Healthy large backups retain the full component deadline.
                     busy_since = None
 
-            source.backup(output, pages=128, progress=progress, sleep=0.05)
+            began = False
+            try:
+                if wal_snapshot is not None and source.execute("PRAGMA journal_mode").fetchone() == ("wal",):
+                    _check_deadline(deadline)
+                    _check_wal_space(source_parent_fd, wal_snapshot["minimum_free_bytes"])
+                    source.execute("BEGIN")
+                    began = True
+                    # BEGIN alone is deferred. Reading the schema pins a real
+                    # snapshot without depending on application tables.
+                    source.execute("SELECT rootpage FROM sqlite_schema LIMIT 1").fetchall()
+                    pinned = source.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+                    if not pinned:
+                        # A journal-mode change raced the initial query. Do not
+                        # retain a rollback-journal read lock during the copy.
+                        source.rollback()
+                        began = False
+                source.backup(output, pages=128, progress=progress, sleep=0.05)
+            finally:
+                if began:
+                    # Release the WAL checkpoint horizon before any NAS checks.
+                    source.rollback()
             _check_deadline(deadline)
             result = output.execute("PRAGMA quick_check").fetchall()
             if result != [("ok",)]:
                 raise ArchiveError(f"SQLite integrity check failed: {relative}")
             output.execute("PRAGMA journal_mode=DELETE")
+            return pinned
         finally:
             output.close()
     finally:
@@ -579,6 +624,7 @@ def _snapshot_sqlite(
     original: os.stat_result,
     target: Path,
     deadline: float,
+    *, wal_snapshot: dict | None = None,
 ) -> tuple[str, tuple | None]:
     """Use the source's real pathname so SQLite can read its live WAL correctly."""
     _check_deadline(deadline)
@@ -596,7 +642,13 @@ def _snapshot_sqlite(
     fallback_guard = None
     method = "online"
     try:
-        _snapshot_sqlite_online(source_root, relative, target, deadline)
+        if wal_snapshot is None:
+            _snapshot_sqlite_online(source_root, relative, target, deadline)
+        else:
+            with _parent_fd(root_fd, relative) as (parent, _name):
+                if _snapshot_sqlite_online(source_root, relative, target, deadline,
+                                          wal_snapshot=wal_snapshot, source_parent_fd=parent):
+                    method = "pinned_wal"
     except sqlite3.OperationalError as error:
         error.add_note(f"SQLite snapshot source: {relative}")
         # A read-only mount cannot initialize absent sidecars for an inactive
@@ -651,6 +703,7 @@ def _create_archive_attempt(
     *,
     staged_capture: bool = False,
     local_capture: dict | None = None,
+    wal_snapshot: dict | None = None,
 ) -> dict:
     parent = destination.parent
     metadata: dict = {
@@ -715,7 +768,10 @@ def _create_archive_attempt(
                         original, is_sqlite, memory = _copy_regular(root_fd, relative, staged, deadline,
                                                                    **copy_options)
                         if is_sqlite:
-                            method, guard = _snapshot_sqlite(source, root_fd, relative, original, staged, deadline)
+                            method, guard = _snapshot_sqlite(source, root_fd, relative, original, staged, deadline,
+                                **({"wal_snapshot": wal_snapshot} if wal_snapshot is not None else {}))
+                            if method == "pinned_wal":
+                                metadata.setdefault("sqlite_pinned_wal_snapshots", []).append(relative)
                             if method == "stable_wal":
                                 metadata["sqlite_stable_wal_copies"].append(relative)
                             if guard is not None:
@@ -794,6 +850,7 @@ def create_archive(
     *,
     staged_capture: bool = False,
     local_capture: dict | None = None,
+    wal_snapshot: dict | None = None,
 ) -> dict:
     """Atomically publish a gzip tar and return its checksum and capture metadata.
 
@@ -814,6 +871,9 @@ def create_archive(
     deadline still covers all phases. This requires space for both tar and gzip.
     Online SQLite snapshots exclude changing database content and sidecars from
     that comparison, while still detecting database replacement/removal.
+    Opt-in wal_snapshot pins a read transaction only for confirmed WAL databases,
+    monitors their source filesystem's free space, and releases the reader before
+    destination validation. The default SQLite backup behavior is unchanged.
     Inactive databases copied after a read-only WAL open failure retain strict
     file/parent signatures and absent-sidecar checks through the final inventory.
     Busy WAL databases use guarded physical copies with streaming second-pass
@@ -823,6 +883,7 @@ def create_archive(
     """
     validate_staged_capture(staged_capture)
     local_capture = validate_local_capture(local_capture, staged_capture=staged_capture)
+    wal_snapshot = validate_wal_snapshot(wal_snapshot)
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
     deadline = time.monotonic() + timeout_seconds
@@ -846,7 +907,8 @@ def create_archive(
         _check_deadline(deadline)
         try:
             metadata = _create_archive_attempt(source, destination, exclusions, deadline, groups,
-                                               staged_capture=staged_capture, local_capture=local_capture)
+                                               staged_capture=staged_capture, local_capture=local_capture,
+                                               wal_snapshot=wal_snapshot)
             metadata["attempts"] = attempt
             return metadata
         except (SourceChangedError, FileNotFoundError) as error:
