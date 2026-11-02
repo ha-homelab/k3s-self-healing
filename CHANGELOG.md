@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.19] - 2026-11-01
+
+### Added
+
+- Allow an administrator to offer one exact published beta through private
+  `release_version` settings. Stable discovery remains the default; approval,
+  immutable images, backup checks and preflight remain mandatory.
+- Compare beta versions correctly and prevent downgrade offers after a beta
+  installation or return to stable discovery.
+- Add the reviewed Home Assistant 2026.11.0b2 native-backup source profile with
+  securetar 2026.10.0 and py-synologydsm-api 2.11.1. Unreviewed betas and mixed
+  source/dependency profiles remain rejected.
+
+### Upgrade
+
+Adopt the verified source through the locked dependency workflow. To select the
+reviewed beta, set the private updater's `release_version` to `2026.11.0b2`,
+redeploy its code and settings, then approve the exact offered candidate. Remove
+the setting after installation to resume stable release discovery. Verify the
+native backup contract and configuration preflight before restarting Core.
+
+### Security
+
+Explicit beta selection does not bypass version-bound approval, digest pinning,
+backup integrity or configuration validation. Release metadata must match the
+requested tag. Unreviewed backup source profiles and dependency combinations
+remain unsupported; the updater never automatically downgrades an installed beta.
+
 ## [0.1.18] - 2026-11-01
 
 ### Fixed

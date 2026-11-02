@@ -26,7 +26,7 @@ class BackupContractTest(unittest.TestCase):
     def test_both_independently_reviewed_releases_qualify(self):
         for version, profile in contract.REVIEWED_PROFILES.items():
             with self.subTest(version=version):
-                result = self.snapshot(version, profile['files'])
+                result = self.snapshot(version, profile['files'], profile.get('dependencies', contract.REVIEWED_DEPENDENCIES))
                 self.assertTrue(result['allowed'])
                 self.assertEqual(result['status'], 'compatible')
                 self.assertEqual(result['homeassistant_version'], version)
@@ -38,6 +38,18 @@ class BackupContractTest(unittest.TestCase):
         self.assertTrue(result['allowed'])
         self.assertEqual(result['homeassistant_version'], '2026.10.1')
         self.assertEqual(result['reviewed_source_version'], '2026.10.0')
+
+    def test_unreviewed_beta_cannot_reuse_a_reviewed_beta_profile(self):
+        profile = contract.REVIEWED_PROFILES['2026.11.0b2']
+        with self.assertRaisesRegex(RuntimeError, 'explicitly reviewed'):
+            self.snapshot('2026.11.0b3', profile['files'], profile['dependencies'])
+
+    def test_reviewed_beta_rejects_old_source_and_mixed_dependencies(self):
+        profile = contract.REVIEWED_PROFILES['2026.11.0b2']
+        with self.assertRaisesRegex(RuntimeError, 'source differs'):
+            self.snapshot('2026.11.0b2')
+        with self.assertRaisesRegex(RuntimeError, 'source differs'):
+            self.snapshot('2026.11.0b2', profile['files'], contract.REVIEWED_DEPENDENCIES)
 
     def test_known_version_does_not_bypass_changed_source(self):
         for operation in ('changed', 'missing', 'added'):

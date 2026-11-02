@@ -62,6 +62,30 @@ REVIEWED_PROFILES = {'2026.10.0': {'files': {'components/backup/__init__.py': 'c
               'source_sha256': 'e1f9d32e731aef867bde68bd594175a2e13f1786529c3cf878d2a3cf7d9a27e6'}}
 
 
+# Exact beta reviewed for streaming cleanup, additive store migration and Synology progress.
+REVIEWED_PROFILES['2026.11.0b2'] = {'files': {'components/backup/__init__.py': '448e43402b2a5a1e9403b1b905ea3d10685d396e3584d289f7f9a4b41220200a',
+           'components/backup/agent.py': 'e7dc56534bf98b1bb29186f865eca4eef41501cfc913f83a72e9d0228f811949',
+           'components/backup/backup.py': '1848ccdac965db2c7af52615552136d16c3bc5bd73bafcd40520fda9b6c63a07',
+           'components/backup/config.py': 'f79376828e170db3008762648dcc58f247ef8f828421bd789b63fe6fcdb2dc70',
+           'components/backup/config_flow.py': '255ea0aaba541e434913e2efb57967f1b5d8c0aa4c17859c1c243990505a68d1',
+           'components/backup/const.py': 'b9fef279d016c74055a399993aef05d903e0278bef2445e01beeee9f28b61c36',
+           'components/backup/coordinator.py': '51601f3d35e8e74ac00ead84dff4c808084ec08a44406bcf8febf14f8db093fa',
+           'components/backup/diagnostics.py': '5cbff853f89a030053fb1f3486d1626ef2454edb6119759363fb7cd55530696e',
+           'components/backup/entity.py': '06a60d482d4aea202f8ec50de6a3964873037147fcba330a37083aca28ecd6bb',
+           'components/backup/event.py': '926cdb917895f8a7bbb41e44565681771cc36c3ac277dc3c30d2add7361b8848',
+           'components/backup/http.py': '6632eae9598dbc411044d6c777ec876d7438252f3343aef190a9e05bbbff78d4',
+           'components/backup/manager.py': '2e989a1e3c03ca62ce17edaa4224715bb84bb44a94f9e39cb26be626cbb13d31',
+           'components/backup/models.py': '061c8345454ad7058e49c199a13f8e555d86746cda1ff261044ed04142d234b9',
+           'components/backup/onboarding.py': 'b1e32c0354da1ca3f60a15ea99e985ba84323380397739a86bf3aacd18926d43',
+           'components/backup/sensor.py': '28a854d220381651dbc6c21050fb14423b8bbb2264d9800e8537f35e8776c494',
+           'components/backup/services.py': '28c5cc35d81dfb2f54b694b8cb3764ff044a5d40d976182d6c1534863e98528b',
+           'components/backup/store.py': '132725e628f450a9aa33edd7d1168b61d2a16fbf6f36781f7e52e9dfa609f94a',
+           'components/backup/util.py': 'bb18e7d300b5db4a9644402bab037170c5b5ef6375ace092da9975dc90e592d3',
+           'components/backup/websocket.py': 'ba635918923252e8c55bc39a08e97d34375671a2df5b0094c9b90ec456c6509d',
+           'components/synology_dsm/backup.py': '46fd99724b5bd9ea98e5d1d9dc418d1284cb3f590c017b7642bb0e6f6dd0fcea'},
+ 'source_sha256': '1dd784d5b22ee7f5e2f20a3b30c7d00d537b069cb1390e96422963132ccf87c8',
+ 'dependencies': {'securetar': '2026.10.0', 'py-synologydsm-api': '2.11.1'}}
+
 def source_digest(fingerprints):
     """Canonical package fingerprint, including the module inventory."""
     return hashlib.sha256(json.dumps(
@@ -69,16 +93,21 @@ def source_digest(fingerprints):
 
 
 def validate_snapshot(version, fingerprints, dependencies, python_minor):
-    """Accept a stable version only when a complete reviewed profile matches."""
-    if not isinstance(version, str) or not re.fullmatch(r'20\d{2}\.(?:[1-9]|1[0-2])\.\d+', version):
-        raise RuntimeError('Native backup contract requires a stable Home Assistant version')
+    """Match source and dependencies; beta releases additionally require exact review."""
+    if not isinstance(version, str) or not re.fullmatch(r'20\d{2}\.(?:[1-9]|1[0-2])\.(?:0|[1-9]\d*)(?:b[1-9]\d*)?', version):
+        raise RuntimeError('Native backup contract requires a stable or explicitly reviewed beta Home Assistant version')
+    if 'b' in version and version not in REVIEWED_PROFILES:
+        raise RuntimeError('Native backup requires an explicitly reviewed beta or a stable version')
     if tuple(python_minor) != REVIEWED_PYTHON:
         raise RuntimeError('Native backup Python runtime requires review')
-    if dependencies != REVIEWED_DEPENDENCIES:
+    if not any(dependencies == p.get('dependencies', REVIEWED_DEPENDENCIES) for p in REVIEWED_PROFILES.values()):
         raise RuntimeError('Native backup dependency versions require review')
     digest = source_digest(fingerprints)
     for reviewed_version, profile in REVIEWED_PROFILES.items():
-        if digest == profile['source_sha256'] and fingerprints == profile['files']:
+        if 'b' in version and version != reviewed_version:
+            continue
+        if (digest == profile['source_sha256'] and fingerprints == profile['files']
+                and dependencies == profile.get('dependencies', REVIEWED_DEPENDENCIES)):
             return {'status': 'compatible', 'allowed': True,
                     'contract_id': CONTRACT_ID, 'homeassistant_version': version,
                     'reviewed_source_version': reviewed_version,
@@ -115,7 +144,7 @@ def verify_runtime_contract(expected_version=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--expect-version', help='Require this exact installed stable version')
+    parser.add_argument('--expect-version', help='Require this exact installed version')
     args = parser.parse_args()
     try:
         result = verify_runtime_contract(args.expect_version)

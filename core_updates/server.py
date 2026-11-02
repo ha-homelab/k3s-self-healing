@@ -141,7 +141,7 @@ async def supervise(app):
             if store.read()["stage"] not in ACTIVE | {"recovery_required"}:
                 try:
                     installed = await asyncio.to_thread(rt.healthy)
-                    target, url = await asyncio.to_thread(release)
+                    target, url = await asyncio.to_thread(release, settings)
                     image = await asyncio.to_thread(image_for, target)
                     base_image = await asyncio.to_thread(rt.image)
                     store.offer(installed, target, image, base_image, url)
