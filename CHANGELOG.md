@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.19] - 2026-11-01
+
+### Added
+
+- Allow an administrator to offer one exact published beta through private
+  `release_version` settings. Stable discovery remains the default; approval,
+  immutable images, backup checks and preflight remain mandatory.
+- Compare beta versions correctly and prevent downgrade offers after a beta
+  installation or return to stable discovery.
+- Add the reviewed Home Assistant 2026.11.0b2 native-backup source profile with
+  securetar 2026.10.0 and py-synologydsm-api 2.11.1. Unreviewed betas and mixed
+  source/dependency profiles remain rejected.
+
 ## [0.1.18] - 2026-11-01
 
 ### Fixed

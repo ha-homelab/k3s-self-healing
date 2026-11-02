@@ -123,12 +123,19 @@ def http_json(url, headers=None, timeout=30):
         return json.load(response)
 
 
-def release():
-    d = http_json("https://api.github.com/repos/home-assistant/core/releases/latest",
+def release(settings=None):
+    selected = (settings or {}).get("release_version")
+    if selected is not None:
+        version_tuple(selected)
+    endpoint = "tags/" + selected if selected is not None else "latest"
+    d = http_json("https://api.github.com/repos/home-assistant/core/releases/" + endpoint,
                   {"Accept": "application/vnd.github+json", "User-Agent": "ha-approved-core-updater"})
     version_tuple(d["tag_name"])
-    if d.get("draft") or d.get("prerelease"):
-        raise RuntimeError("Release is not stable")
+    is_beta = "b" in d["tag_name"]
+    if (d.get("draft") or bool(d.get("prerelease")) != is_beta
+            or (selected is None and is_beta)
+            or (selected is not None and d["tag_name"] != selected)):
+        raise RuntimeError("Release does not match the configured stable or exact-version policy")
     expected = "https://github.com/home-assistant/core/releases/tag/" + d["tag_name"]
     if d.get("html_url") != expected:
         raise RuntimeError("Unexpected release URL")

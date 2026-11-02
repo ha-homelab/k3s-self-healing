@@ -12,8 +12,8 @@ import threading
 import time
 
 ACTIVE = {"preparing", "preflight", "backup", "deploying", "verifying"}
-VERSION = re.compile(r"20\d{2}\.(?:[1-9]|1[0-2])\.(?:0|[1-9]\d*)\Z")
-IMAGE = re.compile(r"ghcr\.io/home-assistant/home-assistant:([\d.]+)@sha256:[a-f0-9]{64}\Z")
+VERSION = re.compile(r"(20\d{2})\.([1-9]|1[0-2])\.(0|[1-9]\d*)(?:b([1-9]\d*))?\Z")
+IMAGE = re.compile(r"ghcr\.io/home-assistant/home-assistant:([\d.]+(?:b[1-9]\d*)?)@sha256:[a-f0-9]{64}\Z")
 RUN_FIELDS = (
     "source_mutation_intent", "source_commit", "source_push_attempted", "source_push_status",
     "helm_upgrade_attempted", "backup_job_uid", "backup_create_attempted", "backup_started_at",
@@ -25,9 +25,12 @@ ATTEMPT_SUMMARY_FIELDS = (
 
 
 def version_tuple(value):
-    if not isinstance(value, str) or not VERSION.fullmatch(value):
-        raise ValueError("A stable Home Assistant version is required")
-    return tuple(map(int, value.split(".")))
+    match = VERSION.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError("An exact stable or beta Home Assistant version is required")
+    year, month, patch, beta = match.groups()
+    # Every beta precedes the stable release, regardless of beta number.
+    return (int(year), int(month), int(patch), int(beta is None), int(beta or 0))
 
 
 def utc():

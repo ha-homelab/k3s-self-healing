@@ -10,7 +10,8 @@ from unittest.mock import DEFAULT, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'core_updates'))
-from model import Store
+from model import Store, version_tuple
+from runtime import release
 
 IMAGE = 'ghcr.io/home-assistant/home-assistant:2026.10.0@sha256:' + 'a' * 64
 
@@ -47,6 +48,50 @@ class ModelTests(unittest.TestCase):
         for image in ('latest', IMAGE.replace('2026.10.0@','2026.10.1@')):
             with self.assertRaises(ValueError): self.store.offer('2026.9.1','2026.10.0',image,'old','url')
         with self.assertRaises(ValueError): self.store.offer('2026.9.1','2026.10.0b1',IMAGE,'old','url')
+
+    def test_beta_is_exact_approved_and_single_use(self):
+        image = IMAGE.replace('2026.10.0', '2026.11.0b2')
+        offer = self.store.offer('2026.10.4', '2026.11.0b2', image, 'old', 'url')
+        body = {'action': 'install', 'target_version': '2026.11.0b2', 'candidate_id': offer['candidate_id']}
+        self.store.approve(body)
+        with self.assertRaises(RuntimeError):
+            self.store.approve(body)
+
+    def test_beta_order_never_offers_downgrade(self):
+        ordered = ['2026.10.4', '2026.11.0b2', '2026.11.0b10', '2026.11.0', '2026.11.1']
+        self.assertEqual(sorted(ordered, key=version_tuple), ordered)
+        for installed, target in [('2026.11.0b2', '2026.10.4'), ('2026.11.0', '2026.11.0b2')]:
+            self.store.offer(installed, target, IMAGE.replace('2026.10.0', target), 'old', 'url')
+            self.assertEqual(self.store.read()['stage'], 'idle')
+
+    def test_version_rejects_mutable_development_and_malformed_tags(self):
+        for value in ['latest', 'beta', '2026.11.0.dev1', '2026.11.0rc1', '2026.11.0b0',
+                      '2026.11.0b02', '2026.11.0b2/other', '2026.11.0b2\n', None]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                version_tuple(value)
+
+    def test_release_default_remains_stable_only(self):
+        with patch('runtime.http_json', return_value={'tag_name': '2026.11.0b2', 'prerelease': True}):
+            with self.assertRaises(RuntimeError):
+                release()
+
+    def test_explicit_beta_release_checks_exact_tag_and_metadata(self):
+        target = '2026.11.0b2'
+        url = 'https://github.com/home-assistant/core/releases/tag/' + target
+        data = {'tag_name': target, 'html_url': url, 'prerelease': True, 'draft': False}
+        with patch('runtime.http_json', return_value=data) as query:
+            self.assertEqual(release({'release_version': target}), (target, url))
+            self.assertTrue(query.call_args.args[0].endswith('/tags/' + target))
+        for changes in [{'tag_name': '2026.11.0b3'}, {'prerelease': False}, {'draft': True}, {'html_url': 'https://invalid.test'}]:
+            with self.subTest(changes=changes), patch('runtime.http_json', return_value=data | changes):
+                with self.assertRaises(RuntimeError):
+                    release({'release_version': target})
+
+    def test_invalid_explicit_version_never_contacts_network(self):
+        with patch('runtime.http_json') as query:
+            with self.assertRaises(ValueError):
+                release({'release_version': '../../latest'})
+            query.assert_not_called()
 
     def test_failed_or_active_attempt_not_rearmed_by_same_release(self):
         for stage in ('failed','preparing','backup','deploying','recovery_required'):

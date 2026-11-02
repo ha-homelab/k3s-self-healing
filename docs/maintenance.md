@@ -74,6 +74,26 @@ Omit those settings to let the installer fill them, or supply exactly matching
 values; stale or conflicting values fail before any manifest apply. The unused
 `HA_URL` and `MQTT_HOST` environment variables no longer appear in the manifest.
 
+Release discovery uses the latest stable version by default. An administrator
+can set `release_version` in the private updater settings to an exact published
+stable or beta version, such as `2026.11.0b2`. This selects an offer; it does not
+approve installation. The authenticated candidate approval, immutable image,
+native backup and configuration checks remain required. Drafts, development
+tags, mutable channel names and mismatched release metadata are rejected.
+The version ordering puts every beta before its final stable release and never
+offers a downgrade. Remove `release_version` after the deliberate transition to
+resume stable discovery; an installed beta newer than stable stays installed.
+
+The `2026.11.0b2` native-backup profile was reviewed against the complete upstream
+backup module inventory and Synology uploader. Its store migration adds the last
+backup size; the create actions and streamed archive format remain compatible.
+Upload streams now close after success or failure, and Synology reports progress.
+The profile pins securetar `2026.10.0` and py-synologydsm-api `2.11.1` together with
+the source hashes. Dependency versions cannot be mixed with the older profile.
+Other beta versions need their own exact review even if their files are identical.
+Source eligibility does not replace a successful target-image preflight or
+verification that the configured NAS accepted a real backup.
+
 An approval never means "install whichever version is newest later". A failed
 backup, wrong receipt, interrupted write, or unsuccessful preflight stops the
 operation. The durable journal distinguishes an ambiguous result from a proven
