@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.21] - 2026-11-01
+
+### Fixed
+
+- Continue repository maintenance after Home Assistant migrates HACS to
+  Marketplace. Discover both platforms, deduplicate update entities, and accept
+  either platform in the guarded direct installer and selector.
+- Preserve existing guard identities, backup and version checks, sequential
+  installation and restart latches. Exercise the same runtime failure scenarios
+  against both platforms, including mixed inventories and firmware exclusion.
+
+### Upgrade
+
+Install the updated maintenance package while its workers are idle. Keep the
+existing automation, script and helper IDs so the Core updater's exclusion
+guards continue to work. After the 2026.11 migration, verify the Marketplace
+config entry instead of restoring the removed HACS component; see
+`docs/maintenance.md` for migration and restart guidance.
+
+### Security
+
+Marketplace warning acceptance remains a user action in its UI. Maintenance
+does not grant acceptance, bypass backup verification or install Core or device
+firmware. Both repository platforms retain the same guarded installation and
+restart behavior.
+
 ## [0.1.20] - 2026-11-01
 
 ### Added

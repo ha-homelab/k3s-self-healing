@@ -21,13 +21,32 @@ remain available and `script.core_update_approve` can be called from HA's UI.
 The secret value for a configured phone is its HA notify service, not a telephone
 number. Do not copy another installation's mobile entity or account identifier.
 
-`hacs_maintenance.yaml` performs sequential updates only after verifying a recent
+`hacs_maintenance.yaml` performs sequential HACS or Marketplace updates only after verifying a recent
 backup, and defers restart until scripts and automations are idle. Its Sunday
 06:00 schedule is an example in HA's configured timezone. Put an installation's
 schedule change in its private deployment overlay. Maintain reusable package
 logic and its runtime tests directly here, following the
 [shared source ownership policy](publication.md#shared-source-ownership).
 It pauses around active Core updates. It does not upgrade Core or device firmware.
+
+Home Assistant 2026.11 migrates HACS repository entities and devices into the
+built-in Marketplace integration and removes the old HACS code and stores.
+Check the migrated `marketplace` config entry before treating a missing
+`custom_components/hacs` directory as data loss; do not restore the old component
+over a completed migration. The package accepts and deduplicates update entities
+from both platforms, including in the direct installer selector and guard.
+Its automation, script and helper IDs stay unchanged for the Core updater.
+
+Marketplace keeps the device model `integration`, so successful integration
+updates still set the persistent restart latch. Plugin and theme updates do not.
+The legacy HACS restart-summary check remains; Marketplace does not provide that
+summary, so follow its own notices for updates installed outside this package.
+Warning acceptance belongs in Marketplace's UI: a missing acceptance stops
+maintenance without bypassing the warning. Backup confirmation, installation
+verification, timeouts, Core exclusion and the final idle fence apply to both
+platforms. See the upstream [migration](https://github.com/home-assistant/core/blob/2026.11.0b2/homeassistant/components/marketplace/migration.py),
+[update](https://github.com/home-assistant/core/blob/2026.11.0b2/homeassistant/components/marketplace/update.py)
+and [device](https://github.com/home-assistant/core/blob/2026.11.0b2/homeassistant/components/marketplace/entity.py) contracts.
 
 Import `homeassistant/blueprints/motion_light_off.yaml` through HA's blueprint
 mechanism or copy it into your blueprint directory. Choose your own sensors,
