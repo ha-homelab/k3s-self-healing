@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import sys
 import unittest
+import types
 from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
@@ -283,6 +284,19 @@ class ConfigMeasurementTest(unittest.TestCase):
         self.assertLess(abs(measured - baseline), 512)
         self.write('.storage/core.config_entries', os.urandom(65536))
         self.assertGreater(runner.measure_config([], omit_history=True), measured + 60000)
+
+    def test_configuration_measurement_uses_native_database_exclusions_only(self):
+        constants = types.SimpleNamespace(EXCLUDE_FROM_BACKUP=[],
+            EXCLUDE_DATABASE_FROM_BACKUP=['home-assistant_v2.db', 'home-assistant_v2.db-wal'])
+        with patch.dict(sys.modules, {'homeassistant.components.backup.const': constants}), patch.object(
+                runner, 'verify_runtime_contract'):
+            self.write('.storage/auth', b'identity')
+            baseline = runner.measure_config(omit_history=True)
+            self.write('home-assistant_v2.db', os.urandom(65536))
+            self.write('home-assistant_v2.db-wal', os.urandom(65536))
+            self.assertLess(abs(runner.measure_config(omit_history=True) - baseline), 512)
+            self.write('zigbee.db', os.urandom(65536))
+            self.assertGreater(runner.measure_config(omit_history=True), baseline + 60000)
 
     def test_hardlinks_and_symlinks_never_count_as_reclaimed_space(self):
         old = self.write('old', b'preserve')

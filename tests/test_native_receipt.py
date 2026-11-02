@@ -35,6 +35,7 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
     def backup(self, identifier, newer=False, failed=False, agents=None):
         return {'backup_id': identifier, 'date': '2026-09-29T05:00:0' + ('2' if newer else '1') + '+00:00',
                 'agents': {AGENT: {}} if agents is None else agents,
+                'database_included': False, 'homeassistant_included': True,
                 'failed_agent_ids': [AGENT] if failed else []}
 
     async def run_backup(self, configuration_only=False, **settings):
@@ -110,6 +111,18 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
                 await self.run_backup(configuration_only=True)
         self.assertEqual(self.calls, [])
         self.assertTrue((self.root / 'recorder_backup/manifest.json').exists())
+
+    async def test_configuration_backup_verifies_actual_archive_contents(self):
+        identity = {'HA_UPDATE_RUN_ID': 'a' * 32,
+                    'HA_UPDATE_JOB_UID': '12345678-1234-1234-1234-123456789abc'}
+        for field, value in [('database_included', True), ('homeassistant_included', False),
+                             ('database_included', None), ('homeassistant_included', None)]:
+            with self.subTest(field=field, value=value):
+                self.archives[0] = self.backup('requested-id')
+                self.archives[0][field] = value
+                with patch.dict(os.environ, identity), self.assertRaisesRegex(RuntimeError, 'contents do not match'):
+                    await self.run_backup(configuration_only=True)
+                self.assertFalse(self.receipt.exists())
 
     async def test_configuration_backup_does_not_discard_exports_when_ha_busy(self):
         async def busy(kind, generated):

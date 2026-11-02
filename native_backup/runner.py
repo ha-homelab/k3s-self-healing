@@ -194,8 +194,8 @@ def measure_config(exclusions=None, omit_history=False):
     """Count native-included gzip bytes without storing/transferring an archive."""
     if exclusions is None:
         verify_runtime_contract()
-        from homeassistant.components.backup.const import EXCLUDE_FROM_BACKUP
-        exclusions = EXCLUDE_FROM_BACKUP
+        from homeassistant.components.backup.const import EXCLUDE_DATABASE_FROM_BACKUP, EXCLUDE_FROM_BACKUP
+        exclusions = EXCLUDE_FROM_BACKUP + (EXCLUDE_DATABASE_FROM_BACKUP if omit_history else [])
     active = None if omit_history else active_export()
     active_member = 'data/' + active.relative_to(CONFIG).as_posix() if active else None
     started = time.monotonic()
@@ -513,6 +513,9 @@ async def native_backup(configuration_only=False):
                     raise RuntimeError('Requested native backup finished without its archive')
                 if backup.get('failed_agent_ids') or not all(a in backup['agents'] for a in destinations):
                     raise RuntimeError('Native backup was not confirmed at every configured destination')
+                if configuration_only and (backup.get('database_included') is not False
+                                           or backup.get('homeassistant_included') is not True):
+                    raise RuntimeError('Native backup contents do not match configuration-only policy')
                 receipt = {'backup_id': backup['backup_id'], 'date': backup['date'],
                            'agents': backup['agents'], 'recorder': None if configuration_only else json.loads((OUTPUT / 'manifest.json').read_text()),
                            **update_context}
