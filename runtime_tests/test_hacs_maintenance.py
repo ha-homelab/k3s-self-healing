@@ -61,6 +61,8 @@ def shorten_waits(value):
 
 @unittest.skipUnless(HA_AVAILABLE, 'Home Assistant Python runtime is not installed')
 class HacsMaintenanceTest(unittest.IsolatedAsyncioTestCase):
+    integration = 'hacs'
+
     async def asyncSetUp(self):
         # A JSON override supports stdin-only execution in an existing HA image.
         # It contains the package under test, never live HA configuration.
@@ -71,7 +73,8 @@ class HacsMaintenanceTest(unittest.IsolatedAsyncioTestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix='hacs-maintenance-test-')
         self.hass = HomeAssistant(self.temporary.name)
         self.calls = []
-        self.inventory = []
+        self.inventories = {'hacs': [], 'marketplace': []}
+        self.inventory = self.inventories[self.integration]
         self.models = {}
         self.worker_tasks = []
         self.worker_errors = []
@@ -90,12 +93,12 @@ class HacsMaintenanceTest(unittest.IsolatedAsyncioTestCase):
         self.logger.disabled = True
         self.now = datetime(2026, 9, 27, 13, tzinfo=timezone.utc)
 
-        inventory = self.inventory
+        inventories = self.inventories
         models = self.models
         self.patches = [
             patch('homeassistant.util.dt.now', side_effect=lambda *args, **kwargs: self.now),
             patch.object(ConfigEntryExtension, 'integration_entities',
-                         lambda extension, domain: list(inventory) if domain == 'hacs' else []),
+                         lambda extension, domain: list(inventories.get(domain, []))),
             patch.object(DeviceExtension, 'device_attr',
                          lambda extension, entity, attribute: models.get(entity) if attribute == 'model' else None),
         ]
@@ -140,10 +143,11 @@ class HacsMaintenanceTest(unittest.IsolatedAsyncioTestCase):
             variables=cv.SCRIPT_VARIABLES_SCHEMA(variables) if variables else None,
         )
 
-    def add_update(self, name, model='plugin', *, available=True, integration='hacs'):
+    def add_update(self, name, model='plugin', *, available=True, integration=None):
         entity = f'update.{name}'
-        if integration == 'hacs':
-            self.inventory.append(entity)
+        integration = integration or self.integration
+        if integration in self.inventories:
+            self.inventories[integration].append(entity)
         self.models[entity] = model
         self.hass.states.async_set(entity, 'on' if available else 'off', {
             'installed_version': '1.0.0', 'latest_version': '2.0.0' if available else '1.0.0',
@@ -209,7 +213,7 @@ class HacsMaintenanceTest(unittest.IsolatedAsyncioTestCase):
             'installed_version': installed_version, 'latest_version': installed_version,
             'in_progress': False,
         }
-        if self.models[entity] == 'integration':
+        if self.models[entity] == 'integration' and entity in self.inventories['hacs']:
             attributes['release_summary'] = 'Restart of Home Assistant required'
         self.hass.states.async_set(entity, 'off', attributes)
         if self.core_after_install:
@@ -314,7 +318,7 @@ class HacsMaintenanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.hass.states.get(LATCH).state, 'off')
 
     async def test_integrations_and_hacs_install_hacs_last_restart_once(self):
-        hacs = self.add_update('hacs_update', 'integration')
+        hacs = self.add_update('hacs_update', 'integration', integration='hacs')
         integration = self.add_update('z_integration', 'integration')
         plugin = self.add_update('a_card')
         await self.run_automation()
@@ -514,6 +518,36 @@ class HacsMaintenanceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.hass.states.get(LATCH).state, 'off')
         self.assertEqual(self.count('input_boolean.turn_off'), 1)
         self.assertEqual(self.count('homeassistant.restart'), 0)
+
+    async def test_mixed_platforms_deduplicate_and_exclude_non_update_entities(self):
+        first = self.add_update('a_legacy', integration='hacs')
+        second = self.add_update('b_migrated', integration='marketplace')
+        self.inventories['hacs'].append(second)
+        self.inventories['marketplace'].append('sensor.marketplace_downloads')
+        self.hass.states.async_set('sensor.marketplace_downloads', 'on')
+        self.add_update('device_firmware', integration='other')
+        self.add_update('ha_core', integration='homeassistant')
+        await self.run_automation()
+        self.assertEqual(self.installed(), [first, second])
+        self.assertEqual(self.count('backup.create_automatic'), 1)
+        self.assertEqual(self.count('homeassistant.restart'), 0)
+
+    async def test_direct_worker_accepts_marketplace_and_rejects_core_or_firmware(self):
+        marketplace = self.add_update('marketplace_card', integration='marketplace')
+        core = self.add_update('core', integration='homeassistant')
+        firmware = self.add_update('firmware', integration='other')
+        worker = self.workers['script.hacs_maintenance_install']
+        for entity in (core, firmware):
+            await worker.async_run({'update_entity': entity}, Context())
+        self.assertEqual(self.installed(), [])
+        await worker.async_run({'update_entity': marketplace}, Context())
+        self.assertEqual(self.installed(), [marketplace])
+
+
+class MarketplaceMaintenanceTest(HacsMaintenanceTest):
+    """Run the same backup, failure, Core and restart fences after migration."""
+
+    integration = 'marketplace'
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 # Keep the coordinator, bounded workers and restart latch together as one package.
-# Only HACS update entities are eligible; HA Core and device firmware are excluded.
+# Only HACS/Marketplace update entities are eligible; Core and firmware are excluded.
 # Core status is checked at every mutation boundary; its worker also gates on HACS activity.
 input_boolean:
   hacs_maintenance_restart_pending:
@@ -32,19 +32,22 @@ script:
   hacs_maintenance_install:
     alias: "HACS maintenance: install one update"
     description: >-
-      Install one available HACS update. A coordinator timeout leaves this worker
+      Install one available HACS or Marketplace update. A coordinator timeout leaves this worker
       running so an in-flight download or file replacement is never cancelled.
     mode: single
     max_exceeded: warning
     fields:
       update_entity:
-        name: HACS update entity
-        description: An installed repository's HACS update entity.
+        name: HACS or Marketplace update entity
+        description: An installed repository's HACS or Marketplace update entity.
         required: true
         selector:
           entity:
-            integration: hacs
-            domain: update
+            filter:
+              - integration: hacs
+                domain: update
+              - integration: marketplace
+                domain: update
     sequence:
       # Missing status is safe only when the Core updater package is not installed.
       - condition: template
@@ -57,7 +60,7 @@ script:
                  and core.attributes.get('stage') in ['idle', 'available', 'succeeded', 'failed']) }}
       - condition: template
         value_template: >-
-          {{ update_entity in integration_entities('hacs')
+          {{ update_entity in (integration_entities('hacs') + integration_entities('marketplace'))
              and update_entity.startswith('update.')
              and is_state(update_entity, 'on')
              and state_attr(update_entity, 'in_progress') is sameas false }}
@@ -110,7 +113,7 @@ automation:
     alias: "HACS maintenance: update repositories and restart once"
     description: >-
       Sunday at 06:00 Home Assistant local time, reuse a successful automatic backup
-      from the preceding four hours or create one, then install available HACS
+      from the preceding four hours or create one, then install available HACS or Marketplace
       updates sequentially and restart once if integrations require it.
       Stop and notify on any failure or timeout.
     mode: single
@@ -125,7 +128,8 @@ automation:
         {% set age = as_timestamp(now()) - as_timestamp(states('sensor.backup_last_successful_automatic_backup'), 0) %}
         {{ 0 <= age <= 4 * 3600 }}
       hacs_updates: >-
-        {{ integration_entities('hacs') | select('match', '^update[.]') | sort | list }}
+        {{ (integration_entities('hacs') + integration_entities('marketplace'))
+           | unique | select('match', '^update[.]') | sort | list }}
       pending_updates: >-
         {% set ns = namespace(normal=[], hacs=[]) %}
         {% for entity in hacs_updates %}

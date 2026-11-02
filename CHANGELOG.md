@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.21] - 2026-11-01
+
+### Fixed
+
+- Continue repository maintenance after Home Assistant migrates HACS to
+  Marketplace. Discover both platforms, deduplicate update entities, and accept
+  either platform in the guarded direct installer and selector.
+- Preserve existing guard identities, backup and version checks, sequential
+  installation and restart latches. Exercise the same runtime failure scenarios
+  against both platforms, including mixed inventories and firmware exclusion.
+
 ## [0.1.20] - 2026-11-01
 
 ### Added
