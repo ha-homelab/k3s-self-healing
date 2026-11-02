@@ -260,6 +260,8 @@ def check_native_capacity(measured, omit_history=False):
                          'reserve_bytes': reserve_bytes(config_disk.total)}
         print(json.dumps({'config_capacity': config_report}), flush=True)
         if config_disk.free < reserve_bytes(config_disk.total):
+            if omit_history:
+                raise RuntimeError('Insufficient free space on configuration filesystem')
             raise RuntimeError('Insufficient free space on configuration filesystem; verified SQL export retained')
     required = reserve_bytes(disk.total) + sql_bytes + archive_overhead(measured)
     report = {'free_bytes': disk.free, 'reserve_bytes': reserve_bytes(disk.total),
