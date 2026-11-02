@@ -22,6 +22,14 @@ Install matching updater and native-backup source while idle before selecting
 the optional policy. Read the history-loss and recovery limits in
 `docs/maintenance.md`; never downgrade over a migrated recorder database.
 
+### Security
+
+Configuration archives still contain credentials and device keys: retain the
+configured encryption and private NAS access. The optional policy reduces
+history retention, not access checks. It preserves authenticated approval,
+exact-image validation and destination confirmation, rejects unknown or linked
+local artifacts, and never deletes data from the running recorder database.
+
 ## [0.1.19] - 2026-11-01
 
 ### Added
