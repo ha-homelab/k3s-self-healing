@@ -10,6 +10,9 @@
 - Preserve existing guard identities, backup and version checks, sequential
   installation and restart latches. Exercise the same runtime failure scenarios
   against both platforms, including mixed inventories and firmware exclusion.
+- Use each reviewed backup profile's dependency versions in the release fuzz
+  oracle. Cover every profile and wrapped profile indexes, and reject mixed
+  source/dependency combinations without changing the production contract.
 
 ### Upgrade
 
