@@ -53,6 +53,43 @@ class RecorderPathsTest(unittest.TestCase):
         self.assertEqual((self.sql.read_bytes(), self.manifest.read_bytes()), self.before)
         self.assertEqual(runner.verify_dump(self.output), self.old)
 
+    def test_configuration_policy_discards_only_generated_local_history(self):
+        (self.config / 'secrets.yaml').write_text('retained fixture')
+        runner.discard_configuration_history()
+        self.assertEqual(list(self.output.iterdir()), [])
+        self.assertEqual((self.config / 'secrets.yaml').read_text(), 'retained fixture')
+        runner.discard_configuration_history()  # Empty or interrupted cleanup is safe.
+
+    def test_configuration_policy_refuses_unknown_file_before_deleting_anything(self):
+        extra = self.output / 'user-notes.txt'
+        extra.write_text('keep')
+        with self.assertRaisesRegex(RuntimeError, 'Unknown or linked'):
+            runner.discard_configuration_history()
+        self.assert_previous_preserved()
+        self.assertEqual(extra.read_text(), 'keep')
+
+    def test_configuration_policy_refuses_unfinished_export(self):
+        pending = self.stage / 'recorder.sql.xz.pending'
+        pending.write_text('in progress')
+        with self.assertRaisesRegex(RuntimeError, 'staging data'):
+            runner.discard_configuration_history()
+        self.assert_previous_preserved()
+
+    def test_configuration_policy_does_not_follow_payload_links(self):
+        target = self.root / 'private'
+        self.sql.rename(target)
+        for symlink in (True, False):
+            with self.subTest(symlink=symlink):
+                if symlink:
+                    self.sql.symlink_to(target)
+                else:
+                    os.link(target, self.sql)
+                with self.assertRaisesRegex(RuntimeError, 'Unknown or linked'):
+                    runner.discard_configuration_history()
+                self.assertEqual(target.read_bytes(), self.before[0])
+                self.assertEqual(self.manifest.read_bytes(), self.before[1])
+                self.sql.unlink()
+
     def reject_in_both_phases(self):
         for operation in (runner.prepare, runner.publish):
             with self.subTest(operation=operation.__name__):

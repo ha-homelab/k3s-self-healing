@@ -29,6 +29,7 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
         self.result = {'backup_job_id': 'requested-id'}
         self.archives = [self.backup('requested-id'), self.backup('unrelated-newer-id', newer=True)]
         self.calls, self.receive_timeouts = [], []
+        self.requests = []
         self.hook = None
 
     def backup(self, identifier, newer=False, failed=False, agents=None):
@@ -36,7 +37,7 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
                 'agents': {AGENT: {}} if agents is None else agents,
                 'failed_agent_ids': [AGENT] if failed else []}
 
-    async def run_backup(self, **settings):
+    async def run_backup(self, configuration_only=False, **settings):
         fixture = self
 
         class Socket:
@@ -47,6 +48,7 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
             async def __aexit__(self, *args):pass
             async def send_json(self, value):
                 self.last = value;fixture.calls.append(value['type'])
+                fixture.requests.append(value)
 
             async def receive_json(self, **kwargs):
                 fixture.receive_timeouts.append(kwargs.get('timeout'))
@@ -56,12 +58,14 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
                 if fixture.hook:
                     reply = await fixture.hook(kind, self.generated)
                     if reply is not None:return reply
-                if kind == 'backup/generate_with_automatic_settings':
+                if kind in {'backup/generate_with_automatic_settings', 'backup/generate'}:
                     self.generated = True;result = fixture.result
                 elif kind == 'backup/info':
                     result = {'state': 'idle', 'backups': fixture.archives if self.generated else []}
                 elif kind == 'backup/config/info':
-                    result = {'config': {'create_backup': {'agent_ids': [AGENT]}}}
+                    result = {'config': {'create_backup': {'agent_ids': [AGENT],
+                        'password': 'offline-encryption-fixture', 'include_folders': None,
+                        'include_database': True}}}
                 else:result = {'version': '2026.9.1', 'components': ['backup']}
                 return {'id': self.last['id'], 'success': True, 'result': result}
 
@@ -75,10 +79,49 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
         limits = {'POLL_INTERVAL_SECONDS': 0.001, **settings}
         with patch.dict(sys.modules, {'aiohttp': aiohttp}), patch.dict(os.environ, {
                 'HA_TOKEN_FILE': str(self.token), 'HA_URL': 'http://offline.invalid'}), patch.multiple(
-                runner, CONFIG=self.root, OUTPUT=self.root / 'recorder_backup', **limits), patch.object(
+                runner, CONFIG=self.root, OUTPUT=self.root / 'recorder_backup',
+                STAGE=self.root / 'backups/recorder-export-staging', **limits), patch.object(
                 runner, 'measure_config', return_value=0), patch.object(runner, 'check_native_capacity', return_value={}), patch.object(
                 runner, 'verify_runtime_contract', return_value={'homeassistant_version': '2026.9.1'}):
-            await runner.native_backup()
+            await runner.native_backup(configuration_only=configuration_only)
+
+    async def test_configuration_backup_preserves_encryption_and_omits_history(self):
+        identity = {'HA_UPDATE_RUN_ID': 'a' * 32,
+                    'HA_UPDATE_JOB_UID': '12345678-1234-1234-1234-123456789abc'}
+        with patch.dict(os.environ, identity):
+            await self.run_backup(configuration_only=True)
+        request = next(r for r in self.requests if r['type'] == 'backup/generate')
+        self.assertEqual(request['password'], 'offline-encryption-fixture')
+        self.assertEqual(request['agent_ids'], [AGENT])
+        self.assertIs(request['include_database'], False)
+        self.assertIs(request['include_homeassistant'], True)
+        self.assertNotIn('include_folders', request)
+        self.assertNotIn('backup/generate_with_automatic_settings', self.calls)
+        receipt = json.loads(self.receipt.read_text())
+        self.assertEqual(receipt['backup_mode'], 'configuration')
+        self.assertIs(receipt['recorder_history_included'], False)
+        self.assertIsNone(receipt['recorder'])
+        self.assertEqual(receipt['update_job_uid'], identity['HA_UPDATE_JOB_UID'])
+        self.assertEqual(list((self.root / 'recorder_backup').iterdir()), [])
+
+    async def test_configuration_backup_requires_job_identity_before_cleanup(self):
+        with patch.dict(os.environ, {'HA_UPDATE_RUN_ID': 'a' * 32}):
+            with self.assertRaisesRegex(RuntimeError, 'identified updater Job'):
+                await self.run_backup(configuration_only=True)
+        self.assertEqual(self.calls, [])
+        self.assertTrue((self.root / 'recorder_backup/manifest.json').exists())
+
+    async def test_configuration_backup_does_not_discard_exports_when_ha_busy(self):
+        async def busy(kind, generated):
+            if kind == 'backup/info':
+                return {'id': len(self.calls) - 1, 'success': True, 'result': {'state': 'create_backup'}}
+        self.hook = busy
+        identity = {'HA_UPDATE_RUN_ID': 'a' * 32,
+                    'HA_UPDATE_JOB_UID': '12345678-1234-1234-1234-123456789abc'}
+        with patch.dict(os.environ, identity):
+            with self.assertRaisesRegex(RuntimeError, 'Another native backup'):
+                await self.run_backup(configuration_only=True)
+        self.assertTrue((self.root / 'recorder_backup/manifest.json').exists())
 
     async def test_success_receipt_matches_requested_id_not_newest_archive(self):
         await self.run_backup()

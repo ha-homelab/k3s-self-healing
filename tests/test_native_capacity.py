@@ -51,6 +51,20 @@ class ClientOptionsTest(unittest.TestCase):
 
 
 class CapacityTest(unittest.TestCase):
+    def test_configuration_capacity_has_no_sql_allowance_and_rejects_leftovers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory);output = config / 'recorder_backup';output.mkdir()
+            disk = shutil._ntuple_diskusage(54 * GIB, 44 * GIB, 10 * GIB)
+            with patch.multiple(runner, CONFIG=config, OUTPUT=output), patch.object(
+                    runner, 'backup_filesystems', return_value=(disk, disk, False)), patch.object(
+                    runner, 'active_export', side_effect=AssertionError('Must not require an SQL export')):
+                report = runner.check_native_capacity(1000, omit_history=True)
+                self.assertEqual(report['sql_bytes'], 0)
+                self.assertEqual(report['required_bytes'], runner.reserve_bytes(disk.total) + runner.archive_overhead(1000))
+                (output / 'leftover').write_text('must not silently include')
+                with self.assertRaisesRegex(RuntimeError, 'still contains'):
+                    runner.check_native_capacity(1000, omit_history=True)
+
     def test_maximum_keeps_reserve_in_both_phases(self):
         for total in (24 * GIB, 45 * GIB, runner.EXPANDED_FILESYSTEM_MIN, 200 * GIB):
             for free in (7 * GIB, 9 * GIB, 20 * GIB):
@@ -258,6 +272,17 @@ class ConfigMeasurementTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Inactive'):runner.measure_config([])
         runner.active_export(cleanup=True)
         self.assertFalse(stale.exists());self.assertEqual(runner.active_export(), active)
+
+    def test_configuration_measurement_omits_history_but_keeps_identity(self):
+        self.write('configuration.yaml', b'keep config')
+        self.write('.storage/auth', b'keep auth')
+        baseline = runner.measure_config([], omit_history=True)
+        self.write('recorder_backup/recorder.sql.gz', os.urandom(65536))
+        self.write('recorder_backup/manifest.json', b'partial cache is irrelevant to measurement')
+        measured = runner.measure_config([], omit_history=True)
+        self.assertLess(abs(measured - baseline), 512)
+        self.write('.storage/core.config_entries', os.urandom(65536))
+        self.assertGreater(runner.measure_config([], omit_history=True), measured + 60000)
 
     def test_hardlinks_and_symlinks_never_count_as_reclaimed_space(self):
         old = self.write('old', b'preserve')
