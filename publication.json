@@ -94,6 +94,7 @@
     "fuzz/corpus/recorder-metadata/invalid.json",
     "fuzz/corpus/recorder-metadata/valid-gzip.json",
     "fuzz/corpus/recorder-metadata/valid-xz.json",
+    "fuzz/corpus/runtime-contract/reviewed-beta.json",
     "fuzz/corpus/runtime-contract/reviewed.json",
     "fuzz/corpus/runtime-contract/unreviewed.json",
     "fuzz/fuzz_recorder_metadata.py",

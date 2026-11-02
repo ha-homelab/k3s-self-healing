@@ -16,8 +16,11 @@ Accepted metadata must use a recognized basename, exact integer format and
 positive exact integer byte counts. Independently invalidating its checksum,
 filename, byte counts or table inventory must then make validation fail.
 `runtime-contract` mutates the public reviewed source fingerprints, dependency
-inventory and Python/version claims. Successful results must still match a whole
-reviewed source profile; deleting a required file must revoke eligibility. The
+inventory and Python/version claims. Each positive control uses its reviewed
+profile's dependencies; deterministic tests cover every profile and wrapped
+indexes, and the seed corpus includes the reviewed beta. Successful results must
+match the source and dependencies of one reviewed profile; deleting a required
+file must revoke eligibility. The
 reviewed upstream hashes are already public source data, not operator state.
 
 The checked-in target budget is 60 seconds each, with a 4096-byte input limit.

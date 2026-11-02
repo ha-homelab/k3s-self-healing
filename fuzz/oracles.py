@@ -60,7 +60,7 @@ def runtime_contract(data: bytes) -> None:
         return
     version, profile = tuple(REVIEWED_PROFILES.items())[index % len(REVIEWED_PROFILES)]
     fingerprints = profile["files"].copy()
-    dependencies = REVIEWED_DEPENDENCIES.copy()
+    dependencies = profile.get("dependencies", REVIEWED_DEPENDENCIES).copy()
     python_minor = REVIEWED_PYTHON
     operation = mutation.get("operation")
     key = mutation.get("key", "synthetic")
@@ -86,9 +86,14 @@ def runtime_contract(data: bytes) -> None:
             raise
         return
     assert (fingerprints, dependencies) == before  # nosec B101 - mutation oracle
-    assert dependencies == REVIEWED_DEPENDENCIES  # nosec B101 - review boundary
     assert python_minor == REVIEWED_PYTHON  # nosec B101 - runtime boundary
-    assert fingerprints in [item["files"] for item in REVIEWED_PROFILES.values()]  # nosec B101
+    # Source and dependencies must belong to the same reviewed profile. Treating
+    # the two inventories independently could accept an unreviewed combination.
+    assert any(  # nosec B101 - complete reviewed profile boundary
+        fingerprints == item["files"]
+        and dependencies == item.get("dependencies", REVIEWED_DEPENDENCIES)
+        for item in REVIEWED_PROFILES.values()
+    )
     assert result["source_sha256"] == source_digest(fingerprints)  # nosec B101
     assert result["allowed"] is True  # nosec B101
     # A known version must never excuse a missing source file.
