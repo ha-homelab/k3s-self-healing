@@ -39,7 +39,8 @@ shutdowns when devices return without treating an ordinary manual ON as recovery
 The worker supports an existing `home-assistant` Helm release on chart 0.3.80,
 the `home-assistant` StatefulSet, and a `ha-recorder-native-backup` CronJob in the
 same namespace. It needs the matching native backup API Secret and a working
-MySQL recorder + Synology DSM native backup destination. Verify these first.
+Synology DSM native backup destination. The default full-backup policy also
+requires a working MySQL recorder. Verify these first.
 The approved contract pins inspected HA image/runtime versions; unknown versions
 must pass contract review before the backup path will accept them.
 
@@ -100,6 +101,40 @@ operation. The durable journal distinguishes an ambiguous result from a proven
 failure. Do not clear it merely to force a retry. After a database migration,
 restore from the verified matching backup rather than downgrade the image over
 the migrated database.
+
+### Optional configuration-only update backups
+
+Set `"backup_mode": "configuration"` in private updater settings only when
+recorder history is explicitly expendable. The default `"full"` policy is
+unchanged. Unknown values fail; there is no automatic fallback from a failed
+full backup to a smaller one. Deploy matching native-backup and updater source
+while both are idle before selecting this policy.
+
+For an approved Core update, the configuration policy removes the MySQL export
+init containers from that one Job. It uses HA's native `backup/generate` action
+with `include_database: false` and `include_homeassistant: true`, preserving the
+configured destinations, encryption password and folder choices. Configuration,
+credentials, registries, device keys, integrations and automations remain in
+the archive. The running Oracle/MySQL database is neither read nor modified.
+
+Old generated SQL files under `/config/recorder_backup` would otherwise bloat
+every archive. This policy explicitly discards that local export cache after
+checking HA is idle and every entry is a recognized regular, unlinked artifact.
+Unknown files, links and unfinished export staging stop the operation. It does
+not delete existing NAS archives. Weekly full-backup CronJobs are unchanged.
+
+The completed receipt records `backup_mode: configuration`, no recorder payload,
+the exact update and Job identities, and confirmed destinations. A worker using
+the full policy refuses that receipt. All image, approval, preflight and health
+checks remain mandatory. These are manually requested native archives; inspect
+their retention separately from HA's automatically scheduled backups.
+
+This choice gives up matching recorder history for rollback. Do not downgrade
+Core against a database already migrated by a newer version. Restore config at
+the same/newer compatible version, or deliberately provision an empty recorder
+schema and accept lost history. The offline extractor requires explicit
+`--configuration-only`; it still checks required identity files, archive paths
+and compressed-stream integrity. It never starts HA or changes a database.
 
 ### Disposable Core configuration check
 

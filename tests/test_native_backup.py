@@ -28,7 +28,7 @@ class NativeRestoreTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def archive(self, extra=(), bad_hash=False, links=(), version=1, inner_transform=None):
+    def archive(self, extra=(), bad_hash=False, links=(), version=1, inner_transform=None, configuration_only=False):
         sql = b'CREATE TABLE states (state_id BIGINT);\n'
         compressed = gzip.compress(sql) if version == 1 else lzma.compress(sql, preset=0)
         manifest = {'format': 1, 'file': 'recorder.sql.gz', 'compressed_bytes': len(compressed),
@@ -38,7 +38,8 @@ class NativeRestoreTest(unittest.TestCase):
             manifest.update(format=2, compression='xz', file=f"recorder-{manifest['sha256']}.sql.xz")
         files = [(x, b'fixture') for x in ['configuration.yaml', 'secrets.yaml', '.storage/core.config_entries',
                                          '.storage/core.entity_registry', '.storage/auth']]
-        files += [('recorder_backup/manifest.json', json.dumps(manifest).encode()), ('recorder_backup/' + manifest['file'], compressed)]
+        if not configuration_only:
+            files += [('recorder_backup/manifest.json', json.dumps(manifest).encode()), ('recorder_backup/' + manifest['file'], compressed)]
         inner = io.BytesIO()
         with tarfile.open(fileobj=inner, mode='w:gz') as tar:
             for name, value in files + list(extra):
@@ -56,6 +57,8 @@ class NativeRestoreTest(unittest.TestCase):
         path = self.root / 'native.tar'
         with tarfile.open(path, 'w') as tar:
             meta = {'slug': 'abc12345', 'date': '2026-09-25', 'protected': False, 'homeassistant': {'version': '2026.9.1'}}
+            if configuration_only:
+                meta['homeassistant']['exclude_database'] = True
             for name, value in [('./backup.json', json.dumps(meta).encode()), ('homeassistant.tar.gz', payload)]:
                 member = tarfile.TarInfo(name);member.size = len(value)
                 tar.addfile(member, io.BytesIO(value))
@@ -68,6 +71,23 @@ class NativeRestoreTest(unittest.TestCase):
         self.assertFalse(report['homeassistant_started'])
         self.assertFalse(report['database_imported'])
         self.assertTrue((self.root / 'config/.storage/auth').is_file())
+
+    def test_configuration_archive_needs_explicit_restore_mode(self):
+        archive = self.archive(configuration_only=True)
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            restore.extract(archive, self.root / 'default')
+        report = restore.extract(archive, self.root / 'explicit', configuration_only=True)
+        self.assertIsNone(report['database'])
+        self.assertEqual(report['backup_mode'], 'configuration')
+        self.assertFalse(report['homeassistant_started'])
+        self.assertTrue((self.root / 'explicit/.storage/auth').is_file())
+
+    def test_configuration_restore_refuses_unmarked_or_history_containing_archives(self):
+        with self.assertRaisesRegex(ValueError, 'database-excluded'):
+            restore.extract(self.archive(), self.root / 'unmarked', configuration_only=True)
+        archive = self.archive(configuration_only=True, extra=[('recorder_backup/unexpected.sql', b'private')])
+        with self.assertRaisesRegex(ValueError, 'unexpectedly contains'):
+            restore.extract(archive, self.root / 'unexpected', configuration_only=True)
 
     def test_existing_shared_directory_is_private_before_reading_the_backup(self):
         destination = self.root / 'precreated'

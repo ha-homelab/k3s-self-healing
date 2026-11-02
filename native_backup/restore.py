@@ -37,7 +37,7 @@ def verify_database(root):
     return verify_dump(root / 'recorder_backup')
 
 
-def extract(archive, destination):
+def extract(archive, destination, configuration_only=False):
     destination = Path(destination)
     if destination.is_symlink() or (destination.exists() and any(destination.iterdir())):
         raise ValueError('Restore destination must be a new or empty directory')
@@ -46,6 +46,8 @@ def extract(archive, destination):
     destination.chmod(0o700)
     root = destination.resolve()
     meta = backup_metadata(archive)
+    if configuration_only and meta['homeassistant'].get('exclude_database') is not True:
+        raise ValueError('Configuration-only restore requires explicit database-excluded archive metadata')
     seen = set()
     links = []
     count = 0
@@ -110,12 +112,20 @@ def extract(archive, destination):
     for required in ['configuration.yaml', 'secrets.yaml', '.storage/core.config_entries', '.storage/core.entity_registry', '.storage/auth']:
         if not (root / required).is_file():
             raise ValueError('Required Home Assistant state missing: ' + required)
-    db = verify_database(root)
+    if configuration_only:
+        history = root / 'recorder_backup'
+        if (history.is_symlink() or (history.exists() and (not history.is_dir() or any(history.iterdir())))
+                or any((root / name).exists() for name in ('home-assistant_v2.db', 'home-assistant_v2.db-wal'))):
+            raise ValueError('Configuration-only archive unexpectedly contains recorder history')
+        database = None
+    else:
+        db = verify_database(root)
+        database = {'sha256': db['sha256'], 'compressed_bytes': db['compressed_bytes'],
+                    'tables': len(db['tables']), 'completed_at': db['completed_at']}
     return {'status': 'verified_and_extracted', 'backup_id': meta['slug'],
             'backup_date': meta['date'], 'homeassistant_version': meta['homeassistant']['version'],
             'files': count, 'external_links_skipped': skipped,
-            'database': {'sha256': db['sha256'], 'compressed_bytes': db['compressed_bytes'],
-                         'tables': len(db['tables']), 'completed_at': db['completed_at']},
+            'database': database, 'backup_mode': 'configuration' if configuration_only else 'full',
             'homeassistant_started': False, 'database_imported': False}
 
 
@@ -125,7 +135,9 @@ if __name__ == '__main__':
     parser.add_argument('archive', type=Path)
     parser.add_argument('--destination', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--configuration-only', action='store_true',
+                        help='Explicitly accept a database-excluded configuration backup; no history recovery')
     args = parser.parse_args()
-    report = extract(args.archive, args.destination)
+    report = extract(args.archive, args.destination, configuration_only=args.configuration_only)
     args.report.write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({k: v for k, v in report.items() if k != 'external_links_skipped'}))

@@ -63,6 +63,7 @@ class FakeRuntime:
         self.restore_error = False
         self.patch_calls = 0
         self.failure_diagnostic = None
+        self.receipt_extra = {}
 
     def wait_update_visible(self, candidate_id):
         self.events.append(('visible_guard', candidate_id))
@@ -128,6 +129,7 @@ class FakeRuntime:
         self.receipt = {'update_run_id': 'e' * 32 if self.bad_receipt else RUN_ID,
                         'date': datetime.now(timezone.utc).isoformat(),
                         'backup_id': 'exact-native-backup', 'agents': ['synology']}
+        self.receipt.update(self.receipt_extra)
         return deepcopy(self.job_record)
 
     def backup_failure(self, name, uid, run_id, started_at):
@@ -186,7 +188,7 @@ class WorkerFlowTests(unittest.TestCase):
         self.rt.current_image = TARGET
         return ''
 
-    def run_worker(self):
+    def run_worker(self, **settings):
         receipt_path = Mock()
         receipt_path.read_text.side_effect = lambda: json.dumps(self.rt.receipt)
         with patch.object(worker, 'Source', return_value=self.source), \
@@ -195,7 +197,7 @@ class WorkerFlowTests(unittest.TestCase):
              patch.object(worker, 'command', side_effect=self.command), \
              patch.object(worker, 'Path', return_value=receipt_path), \
              patch.object(worker.time, 'sleep'):
-            worker.run(self.store, self.rt, {'chart_version': '0.3.80', 'health_timeout_seconds': 5})
+            worker.run(self.store, self.rt, {'chart_version': '0.3.80', 'health_timeout_seconds': 5, **settings})
 
     def assert_no_deploy(self):
         self.assertFalse(any(args[1] in {'upgrade', 'rollback'} for args in self.commands))
@@ -211,12 +213,46 @@ class WorkerFlowTests(unittest.TestCase):
         self.assertTrue(self.store.data['backup_schedule_restored'])
         self.assertFalse(self.rt.cron['spec']['suspend'])
         self.assertEqual(self.store.data['source_push_status'], 'confirmed')
-        self.assertEqual(self.events[0], ('visible_guard', RUN_ID))
+        self.assertEqual(self.events[0], ('persist', {'backup_mode': 'full'}))
+        self.assertEqual(self.events[1], ('visible_guard', RUN_ID))
         terminal = [index for index, (event, data) in enumerate(self.events)
                     if event == 'persist' and data.get('stage') == 'succeeded']
         restore = max(index for index, (event, _) in enumerate(self.events) if event == 'suspend')
         self.assertEqual(len(terminal), 1)
         self.assertGreater(terminal[0], restore)
+
+    def test_configuration_policy_requires_exact_non_history_receipt(self):
+        self.rt.receipt_extra = {'backup_mode': 'configuration',
+            'recorder_history_included': False, 'recorder': None, 'update_job_uid': 'job-uid'}
+        self.run_worker(backup_mode='configuration')
+        self.assertEqual(self.store.data['stage'], 'succeeded')
+        self.assertEqual(self.store.data['backup_mode'], 'configuration')
+
+    def test_configuration_policy_cannot_consume_old_full_receipt(self):
+        self.run_worker(backup_mode='configuration')
+        self.assertEqual(self.store.data['stage'], 'failed')
+        self.assert_no_deploy()
+
+    def test_full_policy_cannot_consume_configuration_only_receipt(self):
+        self.rt.receipt_extra = {'backup_mode': 'configuration', 'recorder': None,
+            'recorder_history_included': False, 'update_job_uid': 'job-uid'}
+        self.run_worker()
+        self.assertEqual(self.store.data['stage'], 'failed')
+        self.assert_no_deploy()
+
+    def test_configuration_policy_refuses_another_job_receipt(self):
+        self.rt.receipt_extra = {'backup_mode': 'configuration', 'recorder': None,
+            'recorder_history_included': False, 'update_job_uid': 'wrong-job'}
+        self.run_worker(backup_mode='configuration')
+        self.assertEqual(self.store.data['stage'], 'failed')
+        self.assert_no_deploy()
+
+    def test_invalid_policy_stops_before_external_mutations(self):
+        self.run_worker(backup_mode='disabled')
+        self.assertTrue(all(kind == 'persist' for kind, _ in self.events))
+        self.assertEqual(self.store.data['stage'], 'failed')
+        self.assertEqual(self.store.data['last_error'], 'backup_mode must be full or configuration')
+        self.assert_no_deploy()
 
     def test_guard_not_published_in_ha_prevents_all_mutations(self):
         self.rt.guard_error = True
@@ -446,6 +482,7 @@ class RuntimeJobTests(unittest.TestCase):
         cron = next(item for item in yaml.safe_load_all(ROOT.joinpath('native_backup/cronjob.yaml').read_text()) if item['kind'] == 'CronJob')
         before = deepcopy(cron)
         rt = runtime.Runtime.__new__(runtime.Runtime)
+        rt.settings = {}
         rt.get = Mock(return_value=cron)
         spec = rt.backup_spec(RUN_ID)
         pod = spec['template']['spec']
@@ -453,6 +490,25 @@ class RuntimeJobTests(unittest.TestCase):
         self.assertFalse(pod['automountServiceAccountToken'])
         self.assertEqual(cron, before)
         self.assertEqual(pod['initContainers'][1], before['spec']['jobTemplate']['spec']['template']['spec']['initContainers'][1])
+
+    def test_configuration_job_has_no_database_client_and_preserves_weekly_template(self):
+        cron = next(item for item in yaml.safe_load_all(ROOT.joinpath('native_backup/cronjob.yaml').read_text()) if item['kind'] == 'CronJob')
+        before = deepcopy(cron)
+        rt = runtime.Runtime.__new__(runtime.Runtime)
+        rt.settings = {'backup_mode': 'configuration'}
+        rt.get = Mock(return_value=cron)
+        pod = rt.backup_spec(RUN_ID)['template']['spec']
+        self.assertNotIn('initContainers', pod)
+        self.assertEqual(pod['containers'][0]['command'], ['python', '/code/runner.py', 'configuration'])
+        identity = next(e for e in pod['containers'][0]['env'] if e['name'] == 'HA_UPDATE_JOB_UID')
+        self.assertIn('controller-uid', identity['valueFrom']['fieldRef']['fieldPath'])
+        self.assertEqual(cron, before)
+
+    def test_backup_policy_rejects_unknown_or_malformed_values(self):
+        self.assertEqual(runtime.backup_mode({}), 'full')
+        for value in (None, True, False, [], {}, '', 'skip', 'Full'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                runtime.backup_mode({'backup_mode': value})
 
     def test_preflight_mounts_config_subpath_readonly_and_without_hostnetwork(self):
         rt = runtime.Runtime.__new__(runtime.Runtime)

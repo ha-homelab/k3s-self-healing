@@ -118,6 +118,13 @@ def backup_containers(pod):
     return prepared[0], finished[0]
 
 
+def backup_mode(settings):
+    mode = settings.get("backup_mode", "full")
+    if mode not in ("full", "configuration"):
+        raise ValueError("backup_mode must be full or configuration")
+    return mode
+
+
 def http_json(url, headers=None, timeout=30):
     with urlopen(Request(url, headers=headers or {}), timeout=timeout) as response:
         return json.load(response)
@@ -356,9 +363,19 @@ class Runtime:
         spec["ttlSecondsAfterFinished"] = 7 * 86400
         pod = spec["template"]["spec"]
         _, final = backup_containers(pod)
+        if backup_mode(self.settings) == "configuration":
+            if ({item["name"] for item in pod.get("initContainers", [])} != {"prepare", "mysql-dump"}
+                    or len(pod["initContainers"]) != 2 or len(pod["containers"]) != 1):
+                raise RuntimeError("Unexpected native backup containers for configuration-only policy")
+            pod.pop("initContainers")
+            final["command"] = ["python", "/code/runner.py", "configuration"]
+            final.pop("args", None)
         final["env"] = [entry for entry in final.get("env", [])
                         if entry["name"] not in {"HA_UPDATE_RUN_ID", "HA_UPDATE_JOB_UID"}]
         final["env"].append({"name": "HA_UPDATE_RUN_ID", "value": update_run_id})
+        if backup_mode(self.settings) == "configuration":
+            final["env"].append({"name": "HA_UPDATE_JOB_UID", "valueFrom": {
+                "fieldRef": {"fieldPath": "metadata.labels['batch.kubernetes.io/controller-uid']"}}})
         pod["automountServiceAccountToken"] = False
         return spec
 

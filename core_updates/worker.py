@@ -15,7 +15,7 @@ from urllib.request import urlopen
 import yaml
 
 from model import IMAGE, utc
-from runtime import BackupCapacityError, command, terminal_job_state
+from runtime import BackupCapacityError, backup_mode, command, terminal_job_state
 
 
 def image_tag(image):
@@ -204,6 +204,8 @@ def run(store, rt, settings):
     backup_image_verified = False
     outcome = {"stage": "failed", "last_error": "Update did not complete"}
     try:
+        mode = backup_mode(settings)
+        store.update(backup_mode=mode)
         image_tag(approval["image"])
         rt.wait_update_visible(approval["candidate_id"])
         if rt.healthy(approval["installed_version"]) != approval["installed_version"] or rt.image() != approval["base_image"]:
@@ -249,6 +251,11 @@ def run(store, rt, settings):
         backup_terminal = True
         store.update(backup_job_terminal="complete")
         receipt = json.loads(Path("/ha-config/backups/recorder-native-receipt.json").read_text())
+        if receipt.get("backup_mode", "full") != mode:
+            raise RuntimeError("Native backup receipt does not match the selected backup policy")
+        if mode == "configuration" and (receipt.get("recorder_history_included") is not False
+                or receipt.get("recorder") is not None or receipt.get("update_job_uid") != backup_job_uid):
+            raise RuntimeError("Configuration-only backup receipt is incomplete or belongs to another Job")
         if receipt.get("update_run_id") != approval["candidate_id"]:
             raise RuntimeError("Native backup receipt belongs to a different update run")
         date = datetime.fromisoformat(receipt["date"].replace("Z", "+00:00"))

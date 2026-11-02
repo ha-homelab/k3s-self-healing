@@ -190,13 +190,13 @@ def reclaimable_export(path):
     return 0
 
 
-def measure_config(exclusions=None):
+def measure_config(exclusions=None, omit_history=False):
     """Count native-included gzip bytes without storing/transferring an archive."""
     if exclusions is None:
         verify_runtime_contract()
-        from homeassistant.components.backup.const import EXCLUDE_FROM_BACKUP
-        exclusions = EXCLUDE_FROM_BACKUP
-    active = active_export()
+        from homeassistant.components.backup.const import EXCLUDE_DATABASE_FROM_BACKUP, EXCLUDE_FROM_BACKUP
+        exclusions = EXCLUDE_FROM_BACKUP + (EXCLUDE_DATABASE_FROM_BACKUP if omit_history else [])
+    active = None if omit_history else active_export()
     active_member = 'data/' + active.relative_to(CONFIG).as_posix() if active else None
     started = time.monotonic()
 
@@ -216,6 +216,9 @@ def measure_config(exclusions=None):
         # Match HA's native exclusions, including their exact path boundaries.
         # Nested backup/rollback trees remain covered; symlinks are not followed.
         path = Path(member.name)
+        if omit_history and (path == Path('data/recorder_backup') or
+                             Path('data/recorder_backup') in path.parents):
+            return None
         if member.name == active_member or any(
                 path.full_match('data/' + pattern) for pattern in exclusions):
             return None
@@ -240,19 +243,25 @@ def validate_native_path(ha_config, backup_config):
     return destinations
 
 
-def check_native_capacity(measured):
+def check_native_capacity(measured, omit_history=False):
     # Refresh both filesystems after the potentially long configuration scan.
     config_disk, disk, separate = backup_filesystems()
-    sql = active_export()
+    sql = None if omit_history else active_export()
     ceiling = reviewed_export_ceiling(config_disk.total)
-    if sql is None or sql.is_symlink() or not sql.is_file() or sql.stat().st_size > ceiling:
+    if omit_history:
+        recorder_directory(OUTPUT)
+        if any(OUTPUT.iterdir()):
+            raise RuntimeError('Configuration backup still contains recorder exports')
+    elif sql is None or sql.is_symlink() or not sql.is_file() or sql.stat().st_size > ceiling:
         raise RuntimeError('Native backup requires a regular, size-limited recorder export')
-    sql_bytes = sql.stat().st_size
+    sql_bytes = 0 if omit_history else sql.stat().st_size
     if separate:
         config_report = {'free_bytes': config_disk.free, 'total_bytes': config_disk.total,
                          'reserve_bytes': reserve_bytes(config_disk.total)}
         print(json.dumps({'config_capacity': config_report}), flush=True)
         if config_disk.free < reserve_bytes(config_disk.total):
+            if omit_history:
+                raise RuntimeError('Insufficient free space on configuration filesystem')
             raise RuntimeError('Insufficient free space on configuration filesystem; verified SQL export retained')
     required = reserve_bytes(disk.total) + sql_bytes + archive_overhead(measured)
     report = {'free_bytes': disk.free, 'reserve_bytes': reserve_bytes(disk.total),
@@ -262,6 +271,8 @@ def check_native_capacity(measured):
               'shortfall_bytes': max(0, required - disk.free)}
     print(json.dumps({'native_capacity': report}), flush=True)
     if disk.free < required:
+        if omit_history:
+            raise RuntimeError('Insufficient free space for configuration backup')
         diagnostic = dict(report, schema_version=1, code='native_backup_capacity',
                           observed_at=datetime.now(timezone.utc).isoformat(),
                           sql_export_retained=True, **update_receipt_context())
@@ -278,6 +289,35 @@ def check_native_capacity(measured):
         print(json.dumps({'backup_failure': diagnostic}), flush=True)
         raise RuntimeError('Insufficient free space for native backup; verified SQL export retained')
     return report
+
+
+def configuration_history_files():
+    """Select only generated history artifacts; never guess at unknown files.
+
+    An explicit configuration-only update policy permits discarding these local
+    export caches. It never connects to or changes the working recorder database.
+    Validate every entry before deleting any, including after an interrupted
+    cleanup where the manifest and payload may no longer both be present.
+    """
+    recorder_paths(create_stage=True)
+    if any(path.name != 'manifest.json' for path in STAGE.iterdir()):
+        raise RuntimeError('Unfinished or unknown recorder staging data requires inspection')
+    result = []
+    for path in OUTPUT.iterdir():
+        info = path.lstat()
+        if (path.name != 'manifest.json' and not known_dump(path.name)) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise RuntimeError('Unknown or linked history artifact requires inspection')
+        result.append(path)
+    return result
+
+
+def discard_configuration_history():
+    paths = configuration_history_files()
+    for path in paths:
+        path.unlink()
+    fsync_directory(OUTPUT)
+    print(json.dumps({'backup_mode': 'configuration', 'discarded_local_export_files': len(paths),
+                      'working_database_modified': False}), flush=True)
 
 
 def prepare():
@@ -395,12 +435,16 @@ async def reject_websocket_redirect(_session, _context, params):
     raise RuntimeError('Administrative WebSocket redirects are not allowed')
 
 
-async def native_backup():
+async def native_backup(configuration_only=False):
     import aiohttp
     update_context = update_receipt_context()
+    if configuration_only:
+        if not update_context.get('update_run_id') or not update_context.get('update_job_uid'):
+            raise RuntimeError('Configuration-only backup requires an identified updater Job')
+        configuration_history_files()
     # Scan before opening the WebSocket: aiohttp processes HA heartbeat pings
     # while receiving, so a long scan inside an idle connection can close it.
-    measured = await asyncio.to_thread(measure_config)
+    measured = await asyncio.to_thread(measure_config, omit_history=True) if configuration_only else await asyncio.to_thread(measure_config)
     token = Path(os.environ['HA_TOKEN_FILE']).read_text().strip()
     url = os.environ['HA_URL'].rstrip('/')
     trace = aiohttp.TraceConfig()
@@ -413,7 +457,7 @@ async def native_backup():
             if (await socket.receive_json(timeout=API_TIMEOUT_SECONDS)).get('type') != 'auth_ok':
                 raise RuntimeError('Home Assistant authentication failed')
             counter = 0
-            async def call(kind, deadline=None):
+            async def call(kind, deadline=None, **fields):
                 nonlocal counter
                 counter += 1
                 timeout = API_TIMEOUT_SECONDS
@@ -424,7 +468,7 @@ async def native_backup():
                 # Bound the whole request, not each message separately: events
                 # or unrelated replies must not keep extending the wait.
                 async with asyncio.timeout(timeout):
-                    await socket.send_json({'id': counter, 'type': kind})
+                    await socket.send_json({'id': counter, 'type': kind, **fields})
                     while True:
                         reply = await socket.receive_json(timeout=timeout)
                         if reply.get('id') == counter:
@@ -438,9 +482,22 @@ async def native_backup():
             destinations = validate_native_path(await call('get_config'), config)
             if (await call('backup/info'))['state'] != 'idle':
                 raise RuntimeError('Another native backup became active during policy preflight')
-            check_native_capacity(measured)
+            if configuration_only:
+                discard_configuration_history()
+                check_native_capacity(measured, omit_history=True)
+            else:
+                check_native_capacity(measured)
             deadline = time.monotonic() + NATIVE_TIMEOUT_SECONDS
-            result = await call('backup/generate_with_automatic_settings', deadline)
+            if configuration_only:
+                # Preserve destinations, encryption and folder choices without
+                # mutating HA's automatic-backup settings. Never log this mapping.
+                fields = {key: value for key, value in config['create_backup'].items()
+                          if key in {'agent_ids', 'include_addons', 'include_all_addons',
+                                     'include_folders', 'name', 'password'} and value is not None}
+                result = await call('backup/generate', deadline, **fields,
+                                    include_database=False, include_homeassistant=True)
+            else:
+                result = await call('backup/generate_with_automatic_settings', deadline)
             expected_id = result.get('backup_job_id') if isinstance(result, dict) else None
             if not isinstance(expected_id, str) or not expected_id.strip():
                 raise RuntimeError('Native backup API did not return a backup identifier')
@@ -458,9 +515,14 @@ async def native_backup():
                     raise RuntimeError('Requested native backup finished without its archive')
                 if backup.get('failed_agent_ids') or not all(a in backup['agents'] for a in destinations):
                     raise RuntimeError('Native backup was not confirmed at every configured destination')
+                if configuration_only and (backup.get('database_included') is not False
+                                           or backup.get('homeassistant_included') is not True):
+                    raise RuntimeError('Native backup contents do not match configuration-only policy')
                 receipt = {'backup_id': backup['backup_id'], 'date': backup['date'],
-                           'agents': backup['agents'], 'recorder': json.loads((OUTPUT / 'manifest.json').read_text()),
+                           'agents': backup['agents'], 'recorder': None if configuration_only else json.loads((OUTPUT / 'manifest.json').read_text()),
                            **update_context}
+                if configuration_only:
+                    receipt.update(backup_mode='configuration', recorder_history_included=False)
                 write_json(CONFIG / 'backups/recorder-native-receipt.json', receipt)
                 print(json.dumps({'native_backup_completed': receipt['backup_id'], 'date': receipt['date'],
                                   'agents': list(receipt['agents'])}), flush=True)
@@ -475,5 +537,7 @@ if __name__ == '__main__':
         publish()
         if os.environ.get('CREATE_NATIVE_BACKUP', 'true') == 'true':
             asyncio.run(native_backup())
+    elif sys.argv[1] == 'configuration':
+        asyncio.run(native_backup(configuration_only=True))
     else:
-        raise SystemExit('Usage: runner.py prepare|finish')
+        raise SystemExit('Usage: runner.py prepare|finish|configuration')

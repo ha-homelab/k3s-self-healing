@@ -18,7 +18,7 @@ RUN_FIELDS = (
     "source_mutation_intent", "source_commit", "source_push_attempted", "source_push_status",
     "helm_upgrade_attempted", "backup_job_uid", "backup_create_attempted", "backup_started_at",
     "backup_job_terminal", "backup_schedule_was_suspended", "backup_schedule_restored",
-    "backup_image_verified", "previous_helm_revision", "backup_job", "preflight_job", "backup_failure")
+    "backup_image_verified", "previous_helm_revision", "backup_job", "preflight_job", "backup_failure", "backup_mode")
 ATTEMPT_SUMMARY_FIELDS = (
     "candidate_id", "target_version", "stage", "approved_at", "completed_at", "last_error",
     "backup_job", "preflight_job", "backup_id", "backup_failure")
@@ -176,4 +176,4 @@ def public_state(d):
         "stage", "installed_version", "latest_version", "candidate_id", "target_version",
         "expires_at", "release_url", "last_error", "updated_at", "approved_at",
         "completed_at", "backup_id", "source_commit", "backup_job", "preflight_job", "check_error",
-        "backup_failure", "previous_attempt")}
+        "backup_failure", "previous_attempt", "backup_mode")}
