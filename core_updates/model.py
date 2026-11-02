@@ -110,8 +110,8 @@ class Store:
             if version_tuple(target) <= version_tuple(installed):
                 if old["stage"] == "succeeded" and old.get("target_version") == installed:
                     # Keep a durable result long enough for HA to reconnect and notify.
-                    return self.update(installed_version=installed, latest_version=target)
-                return self.update(installed_version=installed, latest_version=target,
+                    return self.update(installed_version=installed, latest_version=installed)
+                return self.update(installed_version=installed, latest_version=installed,
                                    stage="idle", candidate_id="", target_version="", last_error="")
             if (old.get("target_version") == target and old.get("image") == image
                     and old.get("installed_version") == installed

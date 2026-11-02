@@ -63,6 +63,13 @@ class ModelTests(unittest.TestCase):
         for installed, target in [('2026.11.0b2', '2026.10.4'), ('2026.11.0', '2026.11.0b2')]:
             self.store.offer(installed, target, IMAGE.replace('2026.10.0', target), 'old', 'url')
             self.assertEqual(self.store.read()['stage'], 'idle')
+            self.assertEqual(self.store.read()['latest_version'], installed)
+
+    def test_stable_discovery_after_beta_success_does_not_advertise_downgrade(self):
+        self.store.update(stage='succeeded', target_version='2026.11.0b2', installed_version='2026.11.0b2')
+        state = self.store.offer('2026.11.0b2', '2026.10.4', IMAGE.replace('2026.10.0', '2026.10.4'), 'old', 'url')
+        self.assertEqual(state['stage'], 'succeeded')
+        self.assertEqual(state['latest_version'], '2026.11.0b2')
 
     def test_version_rejects_mutable_development_and_malformed_tags(self):
         for value in ['latest', 'beta', '2026.11.0.dev1', '2026.11.0rc1', '2026.11.0b0',
