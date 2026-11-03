@@ -12,9 +12,9 @@ import time
 from aiohttp import web
 import paho.mqtt.client as mqtt
 
-from model import ACTIVE, Store, public_state
+from model import ACTIVE, Store, public_state, version_tuple
 from runtime import Runtime, image_for, release
-from worker import run
+from worker import Source, run
 
 TASKS = web.AppKey('tasks', set)
 
@@ -51,7 +51,9 @@ class Publisher:
                 "manufacturer": "ha-homelab", "model": "Approved k3s Core updates"},
         }
         # Deliberately no MQTT command_topic: broker publishers cannot approve deployments.
-        self.client.publish("homeassistant/update/ha_core_updater/config", json.dumps(discovery), qos=1, retain=True)
+        # The native authenticated HA integration owns the entity when enabled.
+        payload = '' if self.settings.get('native_update_entity') else json.dumps(discovery)
+        self.client.publish("homeassistant/update/ha_core_updater/config", payload, qos=1, retain=True)
         if d.get("installed_version"):
             state = {"installed_version": d["installed_version"],
                 "latest_version": d.get("latest_version") or d["installed_version"],
@@ -92,6 +94,7 @@ def create_app(store, runtime, settings, token, worker=run):
             raise web.HTTPForbidden()
         try:
             body = await request.json()
+            await asyncio.to_thread(runtime.maintenance_idle)
             accepted = store.approve(body)
         except (ValueError, TypeError, json.JSONDecodeError):
             return web.json_response({"error": "Invalid approval request"}, status=422)
@@ -144,7 +147,10 @@ async def supervise(app):
                     target, url = await asyncio.to_thread(release, settings)
                     image = await asyncio.to_thread(image_for, target)
                     base_image = await asyncio.to_thread(rt.image)
-                    store.offer(installed, target, image, base_image, url)
+                    proposal = None
+                    if settings.get('proposal_workflow') and version_tuple(target) > version_tuple(installed):
+                        proposal = await asyncio.to_thread(Source(settings).proposal, image)
+                    store.offer(installed, target, image, base_image, url, proposal=proposal)
                     store.update(check_error="")
                 except Exception as error:
                     # Never put authenticated URLs or raw server output on MQTT.

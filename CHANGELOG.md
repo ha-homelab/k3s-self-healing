@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.0] - 2026-11-03
+
+### Added
+
+- Opt-in stable Core proposal workflow: prepare a pull request with exact runtime
+  and backup image digests before an update is offered.
+- After explicit approval, require fresh configuration backup and target
+  preflight before requesting the exact PR merge through the existing SSH key.
+  Verify merged source before deploying; retain legacy mode by default.
+- Support an authenticated native HA update entity while keeping MQTT status
+  read-only. Reject approvals during repository maintenance in the server too.
+
+### Upgrade
+
+Install the proposal workflow in the deployment repository first, then enable
+`proposal_workflow` and migrate the HA entity before enabling
+`native_update_entity`. See `docs/core-update-proposals.md`. No Core upgrade is
+started by installation. No new GitHub token is stored in HA or the updater.
+
+### Security
+
+Approval remains authenticated, single-use and bound to the exact version and
+proposal head. MQTT never authorizes an install. The Actions token stays in its
+job, merge requests use the existing SSH key, and ordinary GitHub merge rules
+remain effective. Failed or ambiguous merges stop before deployment; review
+private diagnostics and reconcile state before reoffering an update.
+
 ## [0.1.21] - 2026-11-01
 
 ### Fixed

@@ -18,7 +18,7 @@ RUN_FIELDS = (
     "source_mutation_intent", "source_commit", "source_push_attempted", "source_push_status",
     "helm_upgrade_attempted", "backup_job_uid", "backup_create_attempted", "backup_started_at",
     "backup_job_terminal", "backup_schedule_was_suspended", "backup_schedule_restored",
-    "backup_image_verified", "previous_helm_revision", "backup_job", "preflight_job", "backup_failure", "backup_mode")
+    "backup_image_verified", "previous_helm_revision", "backup_job", "preflight_job", "backup_failure", "backup_mode", "merge_request_tag")
 ATTEMPT_SUMMARY_FIELDS = (
     "candidate_id", "target_version", "stage", "approved_at", "completed_at", "last_error",
     "backup_job", "preflight_job", "backup_id", "backup_failure")
@@ -98,7 +98,7 @@ class Store:
             self.data = result
             return deepcopy(result)
 
-    def offer(self, installed, target, image, base_image, release_url, lifetime=7 * 86400):
+    def offer(self, installed, target, image, base_image, release_url, lifetime=7 * 86400, proposal=None):
         version_tuple(installed)
         version_tuple(target)
         if not IMAGE.fullmatch(image) or IMAGE.fullmatch(image).group(1) != target:
@@ -116,7 +116,8 @@ class Store:
             if (old.get("target_version") == target and old.get("image") == image
                     and old.get("installed_version") == installed
                     and old.get("base_image") == base_image
-                    and old.get("expires_at", 0) > time.time()):
+                    and old.get("expires_at", 0) > time.time()
+                    and old.get('proposal_sha') == (proposal or {}).get('proposal_sha')):
                 # A failed attempt is never silently rearmed by discovery.
                 return self.read()
             return self.update(stage="available", installed_version=installed,
@@ -124,6 +125,8 @@ class Store:
                 base_image=base_image, release_url=release_url,
                 candidate_id=secrets.token_hex(16), expires_at=time.time() + lifetime,
                 last_error="", approved_at=None, completed_at=None, backup_id=None,
+                **{key: (proposal or {}).get(key) for key in
+                   ('proposal_sha', 'pull_request_number', 'pull_request_url')},
                 **{key: None for key in RUN_FIELDS})
 
     def reoffer_snapshot(self, body):
@@ -176,4 +179,5 @@ def public_state(d):
         "stage", "installed_version", "latest_version", "candidate_id", "target_version",
         "expires_at", "release_url", "last_error", "updated_at", "approved_at",
         "completed_at", "backup_id", "source_commit", "backup_job", "preflight_job", "check_error",
-        "backup_failure", "previous_attempt", "backup_mode")}
+        "backup_failure", "previous_attempt", "backup_mode", "proposal_sha",
+        "pull_request_number", "pull_request_url")}
