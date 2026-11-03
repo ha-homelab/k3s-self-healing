@@ -207,6 +207,15 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls,[True])
         self.assertEqual(Store(self.store.path).read()['stage'],'preparing')
 
+    async def test_busy_maintenance_rejects_native_approval_without_consuming_it(self):
+        self.runtime.maintenance_idle.side_effect = RuntimeError('Private busy detail')
+        response = await self.client.post('/approve', json=self.body,
+            headers={'Authorization': 'Bearer ' + 'a' * 48})
+        self.assertEqual(response.status, 409)
+        self.assertNotIn('Private', await response.text())
+        self.assertEqual(self.store.read()['stage'], 'available')
+        self.assertEqual(self.calls, [])
+
     async def test_operator_reoffer_does_not_start_worker_or_replay_approval(self):
         self.store.approve(self.body);self.store.update(stage='failed')
         body=self.body|{'action':'reoffer'};headers={'Authorization':'Bearer '+'a'*48}

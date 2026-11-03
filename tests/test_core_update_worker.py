@@ -228,6 +228,39 @@ class WorkerFlowTests(unittest.TestCase):
         self.assertEqual(self.store.data['stage'], 'succeeded')
         self.assertEqual(self.store.data['backup_mode'], 'configuration')
 
+    def test_proposal_merge_occurs_after_backup_and_preflight_before_deploy(self):
+        self.store.data.update(proposal_sha=COMMIT, pull_request_number=23)
+        self.source.proposal.return_value = {'proposal_sha': COMMIT}
+        self.source.request_merge.side_effect = lambda *args: self.events.append(('request_merge', args))
+        self.source.wait_merge.side_effect = lambda *args: self.events.append(('merge_confirmed', args)) or 'e' * 40
+        self.run_worker(proposal_workflow=True)
+        self.assertEqual(self.store.data['stage'], 'succeeded')
+        names = [event[0] for event in self.events]
+        for before, after in [('backup_wait', 'preflight'), ('preflight', 'request_merge'),
+                              ('request_merge', 'merge_confirmed'), ('merge_confirmed', 'helm_upgrade')]:
+            self.assertLess(names.index(before), names.index(after))
+        self.source.pin.assert_not_called()
+        self.source.push.assert_not_called()
+        tag = self.source.request_merge.call_args.args[1]
+        self.assertRegex(tag, r'^ha-core-install/[0-9a-f]{32}$')
+        self.assertNotIn(RUN_ID, tag)
+
+    def test_changed_proposal_stops_before_backup_and_deployment(self):
+        self.store.data.update(proposal_sha=COMMIT, pull_request_number=23)
+        self.source.proposal.return_value = {'proposal_sha': 'e' * 40}
+        self.run_worker(proposal_workflow=True)
+        self.source.request_merge.assert_not_called()
+        self.assertFalse(any(name == 'backup_wait' for name, _ in self.events))
+        self.assert_no_deploy()
+
+    def test_unconfirmed_pr_merge_never_deploys(self):
+        self.store.data.update(proposal_sha=COMMIT, pull_request_number=23)
+        self.source.proposal.return_value = {'proposal_sha': COMMIT}
+        self.source.wait_merge.side_effect = RuntimeError('Merge timed out')
+        self.run_worker(proposal_workflow=True)
+        self.assertEqual(self.store.data['stage'], 'recovery_required')
+        self.assert_no_deploy()
+
     def test_configuration_policy_cannot_consume_old_full_receipt(self):
         self.run_worker(backup_mode='configuration')
         self.assertEqual(self.store.data['stage'], 'failed')

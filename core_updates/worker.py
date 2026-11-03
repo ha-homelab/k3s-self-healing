@@ -75,7 +75,7 @@ class Source:
     def git(self, *args):
         return command(["git", *args], cwd=self.path, env=self.env).strip()
 
-    def prepare(self):
+    def ensure_repository(self):
         remote = self.settings["repository"]
         # The administrator explicitly selects a deployment repository. Never
         # accept option-like paths, local transports, or an example destination.
@@ -87,9 +87,28 @@ class Source:
             command(["git", "clone", "--no-tags", remote, str(self.path)], env=self.env)
         if self.git("remote", "get-url", "origin") != remote or self.git("status", "--porcelain"):
             raise RuntimeError("Deployment checkout is not clean or has an unexpected origin")
+
+    def prepare(self):
+        self.ensure_repository()
         self.git("fetch", "--no-tags", "origin", "main")
         self.git("checkout", "-B", "approved-runtime", "origin/main")
         return self.git("rev-parse", "HEAD")
+
+    def proposal(self, image):
+        from proposals import read_proposal
+        self.ensure_repository()
+        return read_proposal(self, image)
+
+    def request_merge(self, approval, request_tag):
+        proposal = self.proposal(approval['image'])
+        if proposal['proposal_sha'] != approval.get('proposal_sha'):
+            raise RuntimeError('The proposed source changed after approval')
+        self._record_approval(approval)
+        self.git('push', 'origin', proposal['proposal_sha'] + ':refs/tags/' + request_tag)
+
+    def wait_merge(self, approval, timeout=900):
+        from proposals import wait_merge
+        return wait_merge(self, approval, timeout)
 
     def pin(self, image, approval):
         """Create a local source commit; the caller must journal intent before push."""
@@ -212,6 +231,10 @@ def run(store, rt, settings):
             raise RuntimeError("Running deployment changed after this update was offered")
         rt.maintenance_idle()
         source.prepare()
+        if settings.get('proposal_workflow'):
+            proposal = source.proposal(approval['image'])
+            if proposal['proposal_sha'] != approval.get('proposal_sha'):
+                raise RuntimeError('The Core proposal changed after approval')
         chart = chart_file(settings)
         env = helm_env(rt)
         history = json.loads(command(["/tools/helm", "history", "home-assistant", "-n", rt.namespace, "-o", "json"], env=env))
@@ -282,14 +305,23 @@ def run(store, rt, settings):
         source_base = source.prepare()
         store.update(source_mutation_intent={"base_commit": source_base,
                      "image": approval["image"], "candidate_id": approval["candidate_id"]})
-        source_commit = source.pin(approval["image"], approval)
+        if settings.get('proposal_workflow'):
+            request_tag = 'ha-core-install/' + secrets.token_hex(16)
+            source_commit = approval['proposal_sha']
+            store.update(merge_request_tag=request_tag)
+        else:
+            source_commit = source.pin(approval["image"], approval)
         # A push may succeed remotely and then time out locally. Persist its
         # exact intent before starting it and require recovery on ANY exception.
         store.update(source_commit=source_commit, source_push_attempted=True,
                      source_push_status="pending")
         source_push_attempted = True
-        source.push(source_commit)
-        store.update(source_push_status="confirmed")
+        if settings.get('proposal_workflow'):
+            source.request_merge(approval, request_tag)
+            source_commit = source.wait_merge(approval)
+        else:
+            source.push(source_commit)
+        store.update(source_push_status="confirmed", source_commit=source_commit)
 
         # Journal before invoking Helm. A timeout is not proof that HA never
         # started or migrated data; neither Helm rollback nor a source revert
