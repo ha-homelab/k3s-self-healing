@@ -19,6 +19,14 @@ Install the proposal workflow in the deployment repository first, then enable
 `native_update_entity`. See `docs/core-update-proposals.md`. No Core upgrade is
 started by installation. No new GitHub token is stored in HA or the updater.
 
+### Security
+
+Approval remains authenticated, single-use and bound to the exact version and
+proposal head. MQTT never authorizes an install. The Actions token stays in its
+job, merge requests use the existing SSH key, and ordinary GitHub merge rules
+remain effective. Failed or ambiguous merges stop before deployment; review
+private diagnostics and reconcile state before reoffering an update.
+
 ## [0.1.21] - 2026-11-01
 
 ### Fixed
