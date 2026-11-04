@@ -251,14 +251,12 @@ class MetadataReadRetryTests(unittest.TestCase):
             run.assert_called_once()
             sleep.assert_not_called()
 
-    def test_writes_and_binary_transfers_are_not_replayed(self):
+    def test_writes_are_not_replayed(self):
         gh = rc.GitHub(REPO)
         cases = [
             ("releases", "POST", {"tag_name": RC_TAG}, "json"),
             ("releases/42", "PATCH", {"draft": False}, "json"),
             ("contents/release-version-state.json", "PUT", {"branch": "release-version-state"}, "json"),
-            ("releases/assets/42", "GET", None, "asset"),
-            ("actions/artifacts/42/zip", "GET", None, "json"),
         ]
         for (path, method, body, mode), error_format in product(cases, self.ERROR_FORMATS):
             with (
@@ -273,6 +271,7 @@ class MetadataReadRetryTests(unittest.TestCase):
             run.assert_called_once()
             sleep.assert_not_called()
             self.assertNotIn("timeout", run.call_args.kwargs)
+
 
 
 class JobPaginationTests(unittest.TestCase):

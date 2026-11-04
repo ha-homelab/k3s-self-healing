@@ -87,6 +87,7 @@ API_PATHS = {
         "releases/tags/" + TAG_RE.pattern,
         "git/ref/tags/" + TAG_RE.pattern,
         r"actions/runs/[1-9]\d*(?:/artifacts|/attempts/[1-9]\d*/jobs)?",
+        r"actions/runs/[1-9]\d*/attempts/[1-9]\d*",
         r"actions/artifacts/[1-9]\d*/zip",
         r"contents/\.release-policy\.json\?ref=[0-9a-f]{40}",
         r"contents/CHANGELOG\.md\?ref=[0-9a-f]{40}",
@@ -109,6 +110,7 @@ ASSET_CHUNK_SIZE = 1024 * 1024
 ASSET_DOWNLOAD_TIMEOUT = 900
 ASSET_UPLOAD_TIMEOUT = 900
 API_READ_TIMEOUT = 30
+API_BINARY_READ_TIMEOUT = 120
 API_READ_ATTEMPTS = 3
 EXECUTING_RUN_WAIT_SECONDS = 300
 
@@ -433,9 +435,11 @@ class GitHub:
             *(["--input", "-"] if body is not None else []),
             "--", endpoint,
         ]
-        # Metadata is small and replayable. Binary transfers retain their own
-        # timeout/cleanup policy; publication writes must never be replayed.
-        if method == "GET" and mode != "asset" and not path.endswith("/zip"):
+        # Retry whole GET responses only. Existing download APIs remain unchanged;
+        # publication writes are never replayed.
+        if method == "GET":
+            if mode == "asset" or path.endswith("/zip"):
+                return self._read_get(command, endpoint, timeout=API_BINARY_READ_TIMEOUT)
             return self._metadata_read(command, endpoint, mode == "pages")
         # Developer/CI toolchain selected by the invoking operator via PATH.
         result = subprocess.run(  # nosec B603
@@ -446,35 +450,93 @@ class GitHub:
         )
         return self.response(result, f"{method} {endpoint}", github_http_response(result.stdout))
 
-    def _metadata_read(self, command: list[str], endpoint: str, paginated: bool = False) -> bytes:
-        """Retry transient GET failures for at most three 30-second attempts.
+    @staticmethod
+    def _denied_read_diagnostic(stderr: bytes, *, include_status: bool = True) -> bool:
+        """Diagnostics may veto recovery, never establish missing resources."""
+        pattern = rb"authentication|authenticate|credentials|forbidden|permission denied|access denied|rate limit|not found|x509|certificate"
+        if include_status:
+            pattern += rb"|http[ /:]*(?:401|403|404|429)(?:\D|$)"
+        return bool(re.search(pattern, stderr.lower()))
 
-        Jitter adds at most six seconds total. Authentication, authorization,
-        rate limits and missing resources keep their original fail-closed result.
-        A failed paginated response is discarded before replaying the whole read.
-        """
+    @classmethod
+    def _transient_read_failure(cls, result: subprocess.CompletedProcess[bytes]) -> bool:
+        """Recognize transport loss only for a failed GET process."""
+        stderr = result.stderr or b""
+        return result.returncode == 1 and not cls._denied_read_diagnostic(stderr) and bool(
+            re.search(rb"\b(?:unexpected )?eof(?:\s|$)|connection reset by peer|i/o timeout|"
+                      rb"tls handshake timeout|context deadline exceeded|client\.timeout exceeded|"
+                      rb"server closed idle connection|use of closed network connection", stderr.lower())
+        )
+
+    @classmethod
+    def _denied_partial_read(cls, stdout: bytes, stderr: bytes,
+                             paginated: bool = False) -> bool:
+        """A partial denial blocks retries without proving an optional absence."""
+        if not paginated:
+            # Binary and ordinary metadata bodies may contain status-shaped lines.
+            # Paginated --jq tojson bodies escape newlines; later page headers count.
+            separator = re.search(rb"\r?\n\r?\n", stdout)
+            if separator is not None:
+                header = stdout[:separator.end()]
+                try:
+                    _github_http_head(header)
+                except GitHubError:
+                    pass  # Unknown framing retains the conservative veto.
+                else:
+                    stdout = header
+        return cls._denied_read_diagnostic(stderr) or bool(re.search(
+            rb"(?:^|\n)HTTP/(?:1\.[01]|2(?:\.0)?) (?:401|403|404|429)(?:\s|$)", stdout))
+
+    def _metadata_read(self, command: list[str], endpoint: str, paginated: bool = False) -> bytes:
+        """Preserve the metadata adapter and its thirty-second attempt limit."""
+        return self._read_get(command, endpoint, paginated, timeout=API_READ_TIMEOUT)
+
+    def _completed_read(self, result: subprocess.CompletedProcess[bytes], endpoint: str,
+                        paginated: bool, final_attempt: bool) -> bytes | None:
+        """Return complete bytes, or None only when another attempt is allowed."""
+        transport = self._transient_read_failure(result)
+        try:
+            http = github_http_response(result.stdout or b"", paginated)
+        except GitHubError:
+            if (not transport or self._denied_partial_read(result.stdout or b"", result.stderr or b"", paginated)
+                    or final_attempt):
+                raise
+            return None
+        transient = result.returncode == 1 and (
+            (http[0] in {500, 502, 503, 504}
+             and not self._denied_read_diagnostic(result.stderr or b"", include_status=False))
+            or (200 <= http[0] < 300 and transport)
+        )
+        if transient and not final_attempt:
+            return None
+        return self.response(result, f"GET {endpoint}", http)
+
+    def _read_get(self, command: list[str], endpoint: str, paginated: bool = False,
+                  *, timeout: int) -> bytes:
+        """Retry at most three whole reads; discard every failed response."""
+        require(command[:2] == ["gh", "api"] and command.count("--method") == 1
+                and command[command.index("--method") + 1] == "GET"
+                and "--input" not in command, "Retries require a read-only GET")
         for attempt in range(API_READ_ATTEMPTS):
+            final_attempt = attempt == API_READ_ATTEMPTS - 1
             try:
                 result = subprocess.run(  # nosec B603
-                    command, input=None, capture_output=True, check=False,
-                    timeout=API_READ_TIMEOUT,
+                    command, input=None, capture_output=True, check=False, timeout=timeout,
                 )
             except subprocess.TimeoutExpired as error:
-                if attempt == API_READ_ATTEMPTS - 1:
+                if (self._denied_partial_read(error.stdout or b"", error.stderr or b"", paginated)
+                        or final_attempt):
                     raise GitHubError(
-                        f"GET {endpoint}: metadata read timed out after "
-                        f"{API_READ_ATTEMPTS} attempts"
+                        f"GET {endpoint}: read timed out after {attempt + 1} attempts"
                     ) from error
             else:
-                http = github_http_response(result.stdout, paginated)
-                transient = (
-                    result.returncode and http[0] in {500, 502, 503, 504}
-                )
-                if not result.returncode or not transient or attempt == API_READ_ATTEMPTS - 1:
-                    return self.response(result, f"GET {endpoint}", http)
-            # Scheduling jitter is not used for security decisions.
+                content = self._completed_read(result, endpoint, paginated, final_attempt)
+                if content is not None:
+                    return content
+            # The complete previous stdout is discarded, including paginated
+            # prefixes and binary fragments. Jitter adds at most six seconds.
             time.sleep(random.uniform(1, 2 ** (attempt + 1)))  # nosec B311
-        raise AssertionError("Metadata retry loop must return or raise")
+        raise AssertionError("GET retry loop must return or raise")
 
     def api(
         self, path: str, method: str = "GET", body: JSONObject | None = None
@@ -1103,6 +1165,64 @@ def validate_run_provenance(
     )
 
 
+def _execution_timestamp(value: object, label: str) -> datetime:
+    """Normalize timezone-explicit Actions timestamps before comparing intervals."""
+    require(isinstance(value, str), f"Missing or malformed {label}")
+    text = cast(str, value)
+    if text.endswith("Z"):
+        local_time = text[:-1]
+    else:
+        local_time, offset = text[:-6], text[-6:]
+        require(re.fullmatch(r"[+-](?:[01]\d|2[0-3]):[0-5]\d", offset, re.ASCII) is not None,
+                f"Missing or malformed {label}")
+    require(re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?", local_time, re.ASCII
+    ) is not None, f"Missing or malformed {label}")
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError as error:
+        raise ReleaseError(f"Missing or malformed {label}") from error
+
+
+def _require_fresh_job_timing(job: JSONObject, boundary: datetime) -> None:
+    """A cloned success is not proof that its job or steps executed this attempt."""
+    start = _execution_timestamp(job.get("started_at"), "job start")
+    end = _execution_timestamp(job.get("completed_at"), "job completion")
+    require(boundary <= start <= end, "Successful job predates the current release attempt")
+    steps = job.get("steps")
+    require(isinstance(steps, list) and bool(steps), "Successful job lacks execution steps")
+    require(all(isinstance(step, dict) for step in steps), "Malformed job execution step")
+    successful_steps = [step for step in cast(list[JSONObject], steps) if step.get("conclusion") == "success"]
+    require(bool(successful_steps), "Successful job lacks successful execution steps")
+    for step in successful_steps:
+        require(step.get("status") == "completed", "Successful job has incomplete execution steps")
+        step_start = _execution_timestamp(step.get("started_at"), "step start")
+        step_end = _execution_timestamp(step.get("completed_at"), "step completion")
+        require(start <= step_start <= step_end <= end,
+                "Executed step lies outside the current job interval")
+
+
+def require_current_attempt_jobs(
+    gh: GitHub, run_id: int, sha: str, attempt: int, jobs: list[JSONObject]
+) -> None:
+    """Keep first-attempt compatibility; reruns need fresh successful executions."""
+    if attempt == 1:
+        return
+    raw_detail = gh.api(f"actions/runs/{run_id}/attempts/{attempt}")
+    require(isinstance(raw_detail, dict), "Malformed release attempt metadata")
+    detail = cast(JSONObject, raw_detail)
+    require(detail.get("id") == run_id and detail.get("run_attempt") == attempt
+            and detail.get("head_sha") == sha and detail.get("path") == WORKFLOW,
+            "Release attempt metadata identity mismatch")
+    boundary = _execution_timestamp(detail.get("run_started_at"), "release attempt start")
+    for job in jobs:
+        if job.get("status") != "completed" or job.get("conclusion") != "success":
+            continue
+        require(job.get("head_sha") == sha and job.get("run_attempt") == attempt,
+                "Successful job differs from the current release attempt")
+        _require_fresh_job_timing(job, boundary)
+
+
 def release_gate_ready(
     gh: GitHub, run_id: int, sha: str, attempt: int, *, allow_pending: bool = False
 ) -> bool:
@@ -1128,6 +1248,7 @@ def release_gate_ready(
         gate.get("status") == "completed" and gate.get("conclusion") == "success",
         failure,
     )
+    require_current_attempt_jobs(gh, run_id, sha, attempt, jobs)
     return True
 
 
