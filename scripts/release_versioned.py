@@ -481,6 +481,23 @@ def scheduled_reuse(
     return ""
 
 
+def candidate_provenance(
+    repository: str, channel: str, source_sha: str, run_id: int,
+    parent_tag: str | None,
+) -> str:
+    """Render the exact known publication text before any version reservation."""
+    description = (
+        f"Final build from accepted {parent_tag}; new verified package bytes."
+        if parent_tag
+        else f"{channel} candidate with a version fixed before compilation."
+    )
+    return (
+        description + f"\n\nSource: `{source_sha}`\n\n"
+        f"Validation: https://github.com/{repository}/actions/runs/{run_id}\n\n"
+        f"See `{rc.MANIFEST}` for package hashes and version input evidence."
+    )
+
+
 def prepare(args: argparse.Namespace) -> dict[str, object]:
     """Freeze one durable plan before any platform build consumes version files."""
     inputs = event_inputs()
@@ -559,6 +576,17 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
         return closed
     if channel in {"beta", "rc", "stable"}:
         rc.ensure_absent(gh, f"v{base}")
+    if policy.get("release_notes") is not None:
+        # Every channel selects the base-version section; do not allocate a
+        # sequence or build number merely to discover unpublishable notes.
+        # The publisher independently validates the same source again.
+        rc.release_notes(
+            gh, f"v{base}", cast(str, run["head_sha"]),
+            candidate_provenance(
+                gh.repo, channel, cast(str, run["head_sha"]), cast(int, run["id"]),
+                cast(str, parent["tag"]) if parent else None,
+            ),
+        )
     plan = reserve_plan(
         gh,
         policy,
@@ -711,11 +739,6 @@ def publish_versioned(args: argparse.Namespace) -> dict[str, object]:
         verify_reservation(gh, plan, cast(int, run["id"]), parent)
         if channel == "stable":
             rc.require_reviewers(gh)
-        description = (
-            f"Final build from accepted {parent['tag']}; new verified package bytes."
-            if parent
-            else f"{channel} candidate with a version fixed before compilation."
-        )
         superseded = rc.superseded_candidate(gh, info, run, channel)
         if superseded:
             return superseded
@@ -736,9 +759,10 @@ def publish_versioned(args: argparse.Namespace) -> dict[str, object]:
             gh,
             cast(str, plan["tag"]),
             cast(str, plan["source_sha"]),
-            description + f"\n\nSource: `{plan['source_sha']}`\n\n"
-            f"Validation: https://github.com/{gh.repo}/actions/runs/{run['id']}\n\n"
-            f"See `{rc.MANIFEST}` for package hashes and version input evidence.",
+            candidate_provenance(
+                gh.repo, channel, cast(str, plan["source_sha"]), cast(int, run["id"]),
+                cast(str, parent["tag"]) if parent else None,
+            ),
         )
         rc.EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
         rc.EVIDENCE.write_bytes(content)
