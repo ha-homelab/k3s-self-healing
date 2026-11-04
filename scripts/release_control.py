@@ -453,7 +453,7 @@ class GitHub:
     @staticmethod
     def _denied_read_diagnostic(stderr: bytes, *, include_status: bool = True) -> bool:
         """Diagnostics may veto recovery, never establish missing resources."""
-        pattern = rb"authentication|authenticate|credentials|forbidden|permission denied|access denied|rate limit|not found|x509|certificate"
+        pattern = rb"authentication|authenticate|authorization|unauthori[sz]ed|credentials|forbidden|permission denied|access denied|rate limit|not found|x509|certificate"
         if include_status:
             pattern += rb"|http[ /:]*(?:401|403|404|429)(?:\D|$)"
         return bool(re.search(pattern, stderr.lower()))
@@ -533,6 +533,8 @@ class GitHub:
                 content = self._completed_read(result, endpoint, paginated, final_attempt)
                 if content is not None:
                     return content
+                # Drop the failed capture before sleeping or allocating the next one.
+                del result
             # The complete previous stdout is discarded, including paginated
             # prefixes and binary fragments. Jitter adds at most six seconds.
             time.sleep(random.uniform(1, 2 ** (attempt + 1)))  # nosec B311
