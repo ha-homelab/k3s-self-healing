@@ -14,11 +14,13 @@ accepted evidence are not rewritten.
 
 The required release-tooling CI checks discover every
 `test_*.py` file in `.github/release-tests`. The project-owned
-`test_release_read_safety.py` covers transport denials, write non-replay,
-timestamp validation and the actual release gate.
+`test_release_read_safety.py` covers transport denials, rejected write
+methods on the attempt route, timestamp validation and the actual release gate.
 `test_release_response_framing.py` covers partial headers, payload text and
 bounded parsing. Keep both files when regenerating release tooling:
-restoring the older engine must fail these tests.
+restoring the older engine must fail these tests. The existing release-contract
+suite must also remain: `test_writes_are_not_replayed` in
+`test_release_control.py` protects single-attempt write behavior.
 
 ```sh
 python3 -m unittest discover -s .github/release-tests -p 'test_*.py' -v
