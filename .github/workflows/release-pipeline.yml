@@ -102,7 +102,7 @@ jobs:
       actions: read
   checks:
     needs: prepare
-    if: ${{ needs.prepare.outputs.build == 'true' || needs.prepare.outputs.status == 'version-required' }}
+    if: ${{ !cancelled() && ((needs.prepare.result == 'success' && (needs.prepare.outputs.build == 'true' || needs.prepare.outputs.status == 'version-required')) || (needs.prepare.result == 'failure' && github.repository == 'ha-homelab/k3s-self-healing' && github.ref == 'refs/heads/main')) }}
     uses: ./.github/workflows/quality-gate.yml
     with:
       force-full: true
