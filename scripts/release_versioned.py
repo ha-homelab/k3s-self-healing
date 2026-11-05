@@ -174,6 +174,10 @@ def create_confirmation(
                    and all(type(current.get(key)) is type(run[key]) and current[key] == run[key] for key in
                            ("id", "run_attempt", "head_sha", "path", "event")),
                    "Create readback run identity changed")
+        info = readback.json("")
+        rc.require(isinstance(info, dict) and isinstance(info.get("default_branch"), str)
+                   and f"git/ref/heads/{quote(info['default_branch'], safe='')}" == source_ref[0],
+                   "Create readback default branch changed")
         rc.require(readback.json(source_ref[0]) == source_ref[1],
                    "Create readback default source changed")
         content = readback.json("contents/release-version-state.json?ref=release-version-state")

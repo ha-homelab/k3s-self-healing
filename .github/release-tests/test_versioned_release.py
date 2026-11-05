@@ -2059,11 +2059,79 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
 
         with (patch.object(self.gh, 'create_release_once', side_effect=lose_response) as create,
               patch.object(rc, 'CreateReadback', return_value=reader),
-              self.assertRaises(rc.ReleaseError)):
+              self.assertRaisesRegex(rc.ReleaseError, "^Uploaded bytes differ; draft left unpublished$")):
             lifecycle.publish_versioned(self.args)
         create.assert_called_once()
         self.assertFalse(any(method == "PATCH" for _, method, _ in self.gh.writes))
 
+
+    def _reject_tag_move_after_upload(self, recover):
+        lifecycle.prepare(self.args)
+        plan = self.build_current()
+        upload = self.gh.upload
+        reader = Mock()
+        reader.json.side_effect = lambda path: (
+            copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
+            if path.startswith('releases/') else self.gh.api(path))
+        reader.pages.side_effect = self.gh.pages
+
+        def create(body):
+            result = self.gh.api('releases', 'POST', body)
+            if recover:
+                self.gh.releases[result['id']].update(
+                    published_at=None, author={'id': 41898282}, assets=[],
+                    url=f"https://api.github.com/repos/{REPO}/releases/{result['id']}",
+                )
+                raise rc.AmbiguousCreate('response lost')
+            return result
+
+        def move_tag(*args, **kwargs):
+            result = upload(*args, **kwargs)
+            self.gh.refs[plan['tag']]['object']['sha'] = 'b' * 40
+            return result
+
+        with (patch.object(self.gh, 'create_release_once', side_effect=create),
+              patch.object(self.gh, 'upload', side_effect=move_tag),
+              patch.object(rc, 'CreateReadback', return_value=reader),
+              self.assertRaisesRegex(rc.ReleaseError, 'Tag moved before publication')):
+            lifecycle.publish_versioned(self.args)
+        draft = next(r for r in self.gh.releases.values() if r['tag_name'] == plan['tag'])
+        self.assertTrue(draft['draft'])
+        self.assertTrue(self.gh.assets[draft['id']])
+        self.assertFalse(any(method == 'PATCH' for _, method, _ in self.gh.writes))
+
+    def test_ordinary_publish_rechecks_tag_after_verified_uploads(self):
+        self._reject_tag_move_after_upload(False)
+
+    def test_reconciled_publish_rechecks_tag_after_verified_uploads(self):
+        self._reject_tag_move_after_upload(True)
+
+    def test_create_reconciliation_rejects_changed_default_branch(self):
+        lifecycle.prepare(self.args)
+        plan = self.build_current()
+        reader = Mock()
+        reader.json.side_effect = lambda path: (
+            copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
+            if path.startswith('releases/') else self.gh.api(path))
+        reader.pages.side_effect = self.gh.pages
+
+        def lose_response(body):
+            result = self.gh.api('releases', 'POST', body)
+            self.gh.releases[result['id']].update(
+                published_at=None, author={'id': 41898282}, assets=[],
+                url=f"https://api.github.com/repos/{REPO}/releases/{result['id']}",
+            )
+            self.gh.info['default_branch'] = 'other'
+            raise rc.AmbiguousCreate('response lost')
+
+        with (patch.object(self.gh, 'create_release_once', side_effect=lose_response),
+              patch.object(rc, 'CreateReadback', return_value=reader),
+              self.assertRaisesRegex(rc.ReleaseError, 'Create readback default branch changed')):
+            lifecycle.publish_versioned(self.args)
+        draft = next(r for r in self.gh.releases.values() if r['tag_name'] == plan['tag'])
+        self.assertTrue(draft['draft'])
+        self.assertFalse(self.gh.assets.get(draft['id']))
+        self.assertFalse(any(method == 'PATCH' for _, method, _ in self.gh.writes))
 
 class PreparationTests(unittest.TestCase):
     def test_version_order_and_explicit_breaking_intent(self):

@@ -144,6 +144,7 @@ class CreateReadback:
         self.deadline = time.monotonic() + 180
         self.remaining = 64 * 1024 * 1024
         self.calls = 0
+        self.repository_id: int | None = None
 
     def check(self) -> float:
         remaining = self.deadline - time.monotonic()
@@ -159,7 +160,7 @@ class CreateReadback:
                 "Invalid create readback path")
         self.calls += 1
         require(self.calls <= 100, "Create readback request limit exceeded")
-        endpoint = f"repos/{self.repo}/{path}"
+        endpoint = f"repos/{self.repo}" + (f"/{path}" if path else "")
         try:
             result = subprocess.run(  # nosec B603, B607
                 ["gh", "api", "--hostname", GITHUB_HOSTNAME, "--include",
@@ -207,10 +208,27 @@ class CreateReadback:
                     if match and match[2] == "next":
                         target = urlsplit(match[1])
                         require(target.scheme == "https" and target.netloc == "api.github.com"
-                                and target.path == f"/repos/{self.repo}/{path}" and not target.fragment
-                                and parse_qs(target.query, strict_parsing=True)
+                                and not target.fragment
+                                and parse_qs(target.query, strict_parsing=True, keep_blank_values=True)
                                 == {"per_page": ["100"], "page": [str(page + 1)]},
                                 "Unexpected create pagination target")
+                        if target.path != f"/repos/{self.repo}/{path}":
+                            numeric = re.fullmatch(
+                                r"/repositories/([1-9][0-9]*)/" + re.escape(path), target.path
+                            )
+                            require(numeric is not None, "Unexpected create pagination path")
+                            if self.repository_id is None:
+                                info = self.json("")
+                                require(isinstance(info, dict), "Invalid readback repository metadata")
+                                info = cast(JSONObject, info)
+                                name, identity = info.get("full_name"), info.get("id")
+                                require(isinstance(name, str) and bool(REPO_RE.fullmatch(name))
+                                        and name.casefold() == self.repo.casefold()
+                                        and type(identity) is int and identity > 0,
+                                        "Create readback repository identity changed")
+                                self.repository_id = cast(int, identity)
+                            require(numeric is not None and int(numeric[1]) == self.repository_id,
+                                    "Create pagination repository ID changed")
                         next_pages.append(page + 1)
             require(len(next_pages) <= 1, "Duplicate next-page link")
             if not next_pages:
@@ -1995,6 +2013,14 @@ def _publish_prepared(
     )
     for item in uploaded:
         verify_uploaded_asset(gh, item, expected[cast(str, item["name"])])
+    ref = cast(JSONObject, gh.api(f"git/ref/tags/{quote(tag, safe='')}"))
+    require(
+        isinstance(ref, dict) and ref.get("ref") == f"refs/tags/{tag}"
+        and isinstance(ref.get("object"), dict)
+        and cast(JSONObject, ref["object"]).get("type") == "commit"
+        and cast(JSONObject, ref["object"]).get("sha") == sha,
+        "Tag moved before publication; draft left unpublished",
+    )
     result = cast(
         JSONObject,
         gh.api(

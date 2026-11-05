@@ -145,6 +145,97 @@ class ReadbackTests(unittest.TestCase):
                     self.reader.pages('releases')
                 call.assert_called_once()
 
+    def test_numeric_pagination_binds_repository_and_reconstructs_routes(self):
+        for path in ('releases', 'releases/42/assets'):
+            with self.subTest(path=path):
+                reader = rc.CreateReadback(REPO)
+                header = f'Link: <https://api.github.com/repositories/17/{path}?per_page=100&page=2>; rel="next"\r\n'.encode()
+                with patch.object(reader, 'get', side_effect=[
+                        ([{'id': 1}], header), ({'id': 17, 'full_name': REPO.upper()}, b''),
+                        ([{'id': 2}], b'')]) as get:
+                    self.assertEqual(reader.pages(path), [{'id': 1}, {'id': 2}])
+                self.assertEqual([call.args[0] for call in get.call_args_list],
+                                 [path + '?per_page=100&page=1', '', path + '?per_page=100&page=2'])
+
+    def test_numeric_pagination_rejects_wrong_repository_metadata(self):
+        header = b'Link: <https://api.github.com/repositories/17/releases?per_page=100&page=2>; rel="next"\r\n'
+        cases = [{'id': 18, 'full_name': REPO}, {'id': 17, 'full_name': 'other/project'},
+                 {'id': True, 'full_name': REPO}, {'id': '17', 'full_name': REPO},
+                 {'id': 0, 'full_name': REPO}, {'id': -17, 'full_name': REPO},
+                 {'id': 17}, {'full_name': REPO}, [], None]
+        for info in cases:
+            with self.subTest(info=info):
+                reader = rc.CreateReadback(REPO)
+                with patch.object(reader, 'get', side_effect=[([{'id': 1}], header), (info, b'')]) as get:
+                    with self.assertRaises(rc.ReleaseError):
+                        reader.pages('releases')
+                self.assertEqual(get.call_count, 2)
+
+    def test_numeric_pagination_keeps_host_path_and_query_strict(self):
+        urls = ['https://evil.test/repositories/17/releases?per_page=100&page=2',
+                'https://api.github.com/repositories/017/releases?per_page=100&page=2',
+                'https://api.github.com/repositories/17/releases/42/assets?per_page=100&page=2',
+                'https://api.github.com/repositories/17/releases?per_page=100&page=3',
+                'https://api.github.com/repositories/17/releases?per_page=100&page=2&page=2',
+                'https://api.github.com/repositories/17/releases?per_page=100&page=2&unknown=',
+                'https://api.github.com/repositories/17/releases?per_page=100&page=2#fragment']
+        for url in urls:
+            with self.subTest(url=url):
+                reader = rc.CreateReadback(REPO)
+                with patch.object(reader, 'get', return_value=(
+                        [{'id': 1}], f'Link: <{url}>; rel="next"\r\n'.encode())) as get:
+                    with self.assertRaises(rc.ReleaseError):
+                        reader.pages('releases')
+                get.assert_called_once()
+
+    def test_numeric_identity_lookup_shares_deadline_and_call_limit(self):
+        raw = b'HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/17/releases?per_page=100&page=2>; rel="next"\r\n\r\n[{"id":1}]'
+        result = subprocess.CompletedProcess([], 0, raw, b'')
+        reader = rc.CreateReadback(REPO)
+        reader.deadline = 10
+        with (patch.object(rc.time, 'monotonic', side_effect=[1, 2, 10]),
+              patch.object(rc.subprocess, 'run', return_value=result) as run):
+            with self.assertRaisesRegex(rc.ReleaseError, 'deadline'):
+                reader.pages('releases')
+        run.assert_called_once()
+        reader = rc.CreateReadback(REPO)
+        reader.calls = 99
+        with patch.object(rc.subprocess, 'run', return_value=result) as run:
+            with self.assertRaisesRegex(rc.ReleaseError, 'request limit'):
+                reader.pages('releases')
+        run.assert_called_once()
+
+    def test_numeric_metadata_consumes_the_shared_byte_budget(self):
+        page = b'HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/17/releases?per_page=100&page=2>; rel="next"\r\n\r\n[{"id":1}]'
+        metadata = wire(200, b'{"id":17,"full_name":"example/project"}')
+        self.reader.remaining = len(page) + len(metadata) - 1
+        with patch.object(rc.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 0, raw, b'') for raw in (page, metadata)]) as run:
+            with self.assertRaisesRegex(rc.ReleaseError, 'response limit'):
+                self.reader.pages('releases')
+        self.assertEqual(run.call_count, 2)
+        self.assertIsNone(self.reader.repository_id)
+
+    def test_cached_numeric_identity_rejects_a_later_different_id(self):
+        self.reader.repository_id = 17
+        header = b'Link: <https://api.github.com/repositories/18/releases?per_page=100&page=2>; rel="next"\r\n'
+        with patch.object(self.reader, 'get', return_value=([{'id': 1}], header)) as get:
+            with self.assertRaisesRegex(rc.ReleaseError, 'repository ID changed'):
+                self.reader.pages('releases')
+        get.assert_called_once()
+
+    def test_numeric_identity_is_cached_without_following_response_urls(self):
+        header = b'HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/17/releases?per_page=100&page=2>; rel="next"\r\n\r\n[{"id":1}]'
+        responses = [header, wire(200, b'{"id":17,"full_name":"example/project"}'),
+                     wire(200, b'[]'), header, wire(200, b'[]')]
+        with patch.object(rc.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 0, raw, b'') for raw in responses]) as run:
+            self.assertEqual(self.reader.pages('releases'), [{'id': 1}])
+            self.assertEqual(self.reader.pages('releases'), [{'id': 1}])
+        routes = [call.args[0][-1] for call in run.call_args_list]
+        self.assertEqual(routes.count('repos/' + REPO), 1)
+        self.assertTrue(all(route.startswith('repos/' + REPO) for route in routes))
+        self.assertEqual(self.reader.calls, 5)
 
 class ReconciliationTests(unittest.TestCase):
     def setUp(self):
@@ -169,7 +260,7 @@ class ReconciliationTests(unittest.TestCase):
     def test_exact_empty_draft_same_call_only(self):
         self.assertEqual(self.reconcile()['id'], 42)
         self.assertEqual(self.confirm.call_count, 2)
-        self.gh.assert_not_called()
+        self.assertEqual(self.gh.mock_calls, [])
 
     def test_identity_and_state_mismatch(self):
         for key, value in [('body', 'older nonce'), ('target_commitish', 'b' * 40),
@@ -216,7 +307,7 @@ class ConfirmationTests(unittest.TestCase):
         current = {**run, 'status': 'in_progress', 'conclusion': None}
         ledger = {'type': 'file', 'encoding': 'base64', 'content': base64.b64encode(consumed).decode()}
         reader = Mock()
-        reader.json.side_effect = lambda path: current if path.startswith('actions/') else source if path.startswith('git/') else ledger
+        reader.json.side_effect = lambda path: ({'default_branch': 'main'} if path == '' else current if path.startswith('actions/') else source if path.startswith('git/') else ledger)
         confirm(reader)
         for key, value in [('run_attempt', 2), ('status', 'completed'), ('head_sha', 'b' * 40)]:
             before = copy.deepcopy(current)
