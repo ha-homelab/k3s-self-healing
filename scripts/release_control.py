@@ -1973,6 +1973,7 @@ def _reconcile_created_release(
 def _publish_prepared(
     gh: GitHub, tag: str, sha: str, directory: Path, prerelease: bool, body: str,
     *, confirm_create: Callable[[CreateReadback], None] | None = None,
+    confirm_publish: Callable[[], None] | None = None,
 ) -> JSONObject:
     """Internal transaction after callers validate immutable source-bound notes.
 
@@ -2021,6 +2022,8 @@ def _publish_prepared(
         and cast(JSONObject, ref["object"]).get("sha") == sha,
         "Tag moved before publication; draft left unpublished",
     )
+    if confirm_publish is not None:
+        confirm_publish()
     result = cast(
         JSONObject,
         gh.api(
