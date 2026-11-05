@@ -7,7 +7,8 @@
 
 import base64
 import copy
-import subprocess
+# Only CompletedProcess/TimeoutExpired fixtures; every subprocess.run is mocked.
+import subprocess  # nosec B404
 import unittest
 from unittest.mock import Mock, patch
 
