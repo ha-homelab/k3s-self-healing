@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -149,6 +151,44 @@ def context(
     if gate:
         rc.validate_validation_run(gh, run, cast(dict[str, object], snapshot["data"]), channel)
     return info, run, snapshot
+
+
+def create_marker(repository: str, run: dict[str, object], plan_digest: str, nonce: str) -> str:
+    """Reserve the same UTF-8 body space at preparation and actual publication."""
+    identity = {"repository": repository, "source": run["head_sha"],
+                "run": run["id"], "attempt": run["run_attempt"],
+                "plan": plan_digest, "nonce": nonce}
+    marker = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return "\n\n<!-- release-create " + marker + " -->"
+
+
+def create_confirmation(
+    run: dict[str, object], source_ref: tuple[str, object], consumed: bytes,
+) -> Callable[[rc.CreateReadback], None]:
+    """Bind one release-create call, without adding any cross-run recovery state."""
+
+    def confirm(readback: rc.CreateReadback) -> None:
+        current = readback.json(f"actions/runs/{run['id']}/attempts/{run['run_attempt']}")
+        rc.require(isinstance(current, dict) and current.get("status") == "in_progress"
+                   and current.get("conclusion") is None
+                   and all(type(current.get(key)) is type(run[key]) and current[key] == run[key] for key in
+                           ("id", "run_attempt", "head_sha", "path", "event")),
+                   "Create readback run identity changed")
+        info = readback.json("")
+        rc.require(isinstance(info, dict) and isinstance(info.get("default_branch"), str)
+                   and f"git/ref/heads/{quote(info['default_branch'], safe='')}" == source_ref[0],
+                   "Create readback default branch changed")
+        rc.require(readback.json(source_ref[0]) == source_ref[1],
+                   "Create readback default source changed")
+        content = readback.json("contents/release-version-state.json?ref=release-version-state")
+        rc.require(isinstance(content, dict) and content.get("type") == "file"
+                   and content.get("encoding") == "base64" and isinstance(content.get("content"), str),
+                   "Invalid create readback ledger")
+        encoded = cast(str, cast(dict[str, object], content)["content"])
+        raw = base64.b64decode("".join(encoded.split()), validate=True)
+        rc.require(raw == consumed, "Create readback publication ledger changed")
+
+    return confirm
 
 
 # Keep source, workflow and byte verification together at the trust boundary.
@@ -585,7 +625,7 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
             candidate_provenance(
                 gh.repo, channel, cast(str, run["head_sha"]), cast(int, run["id"]),
                 cast(str, parent["tag"]) if parent else None,
-            ),
+            ) + create_marker(gh.repo, run, "0" * 64, "0" * 64),
         )
     plan = reserve_plan(
         gh,
@@ -762,11 +802,14 @@ def publish_versioned(args: argparse.Namespace) -> dict[str, object]:
             candidate_provenance(
                 gh.repo, channel, cast(str, plan["source_sha"]), cast(int, run["id"]),
                 cast(str, parent["tag"]) if parent else None,
-            ),
+            ) + create_marker(gh.repo, run, version_plan.plan_digest(plan), secrets.token_hex(32)),
         )
         rc.EVIDENCE.parent.mkdir(parents=True, exist_ok=True)
         rc.EVIDENCE.write_bytes(content)
-        begin_publication(gh, plan, cast(int, run["id"]), parent)
+        source_path = f"git/ref/heads/{quote(cast(str, info['default_branch']), safe='')}"
+        source_ref = (source_path, gh.api(source_path))
+        consumed = begin_publication(gh, plan, cast(int, run["id"]), parent)
+        confirm_create = create_confirmation(run, source_ref, consumed)
         result = rc._publish_prepared(  # pylint: disable=protected-access
             gh,
             cast(str, plan["tag"]),
@@ -774,6 +817,7 @@ def publish_versioned(args: argparse.Namespace) -> dict[str, object]:
             stage,
             channel != "stable",
             body,
+            confirm_create=confirm_create,
         )
     return {
         "status": "published",

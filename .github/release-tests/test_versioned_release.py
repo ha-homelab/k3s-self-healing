@@ -28,7 +28,7 @@ import zipfile
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import prepare_version
@@ -76,6 +76,10 @@ class LedgerGitHub(legacy_tests.FakeGitHub):  # pylint: disable=too-many-instanc
         self.evidence_by_run = {}
         self.evidence_archives = {}
         self.jobs_by_run = {}
+
+    def create_release_once(self, body):
+        """The in-memory API models the normal successful create response."""
+        return self.api("releases", "POST", body)
 
     def api(self, path, method="GET", body=None):
         if path.startswith("compare/"):
@@ -1131,6 +1135,8 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
             f"Validation: https://github.com/{REPO}/actions/runs/{run_id}\n\n"
             f"See `{rc.MANIFEST}` for package hashes and version input evidence."
         )
+        placeholder = lifecycle.create_marker(REPO, self.gh.runs[run_id], "0" * 64, "0" * 64)
+        expected_provenance += placeholder
         template = (
             "## [1.2.3]\n\n### Fixed\n\nX\n\n"
             "### Upgrade\n\nNo migration is required.\n\n"
@@ -1162,10 +1168,13 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
         expected_body = rc.release_notes(self.gh, "v1.2.3", SHA, expected_provenance)
         self.assertEqual(len(expected_body.encode("utf-8")), 125_000)
         self.assertLess(len(expected_body), 125_000)
-        with patch.object(lifecycle, "candidate_provenance", wraps=lifecycle.candidate_provenance) as provenance:
+        with (patch.object(lifecycle, "candidate_provenance", wraps=lifecycle.candidate_provenance) as provenance,
+              patch.object(lifecycle.secrets, "token_hex", return_value="a" * 64)):
             lifecycle.prepare(self.args)
-            self.build_current()
+            built = self.build_current()
             result = lifecycle.publish_versioned(self.args)
+        actual_marker = lifecycle.create_marker(REPO, self.gh.runs[run_id], versions.plan_digest(built), "a" * 64)
+        expected_body = expected_body.replace(placeholder, actual_marker)
         self.assertEqual(
             [call.args for call in provenance.call_args_list],
             [(REPO, channel, SHA, run_id, parent_tag)] * 2,
@@ -1989,6 +1998,140 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
         self.assertEqual(manifest["source_policy"]["data"]["versioning"]["required_build_receipts"],
                          ["release-inputs-linux.json"])
 
+
+    def test_create_response_loss_keeps_original_manifest_and_one_post(self):
+        lifecycle.prepare(self.args)
+        self.build_current()
+        before = copy.deepcopy(self.gh.__dict__)
+        with patch.object(lifecycle, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 9, 12, tzinfo=timezone.utc)
+            normal = lifecycle.publish_versioned(self.args)
+            expected = rc.EVIDENCE.read_bytes()
+            self.gh.__dict__ = copy.deepcopy(before)
+            reader = Mock()
+
+            def read(path):
+                if path.startswith("releases/"):
+                    return copy.deepcopy(self.gh.releases[int(path.split("/")[1])])
+                return self.gh.api(path)
+
+            reader.json.side_effect = read
+            reader.pages.side_effect = self.gh.pages
+
+            def lose_response(body):
+                release = self.gh.api("releases", "POST", body)
+                self.gh.releases[release["id"]].update(
+                    published_at=None, author={"id": 41898282}, assets=[],
+                    url=f"https://api.github.com/repos/{REPO}/releases/{release['id']}",
+                )
+                raise rc.AmbiguousCreate("response lost")
+
+            with (patch.object(self.gh, "create_release_once", side_effect=lose_response) as create,
+                  patch.object(rc, "CreateReadback", return_value=reader)):
+                recovered = lifecycle.publish_versioned(self.args)
+            create.assert_called_once()
+        self.assertEqual(recovered, normal)
+        self.assertEqual(rc.EVIDENCE.read_bytes(), expected)
+        self.assertEqual(sum(path == "releases" and method == "POST" for path, method, _ in self.gh.writes), 1)
+        self.assertEqual(sum(method == "PATCH" for _, method, _ in self.gh.writes), 1)
+        self.assertTrue(any(self.gh.assets.values()))
+        # A later call must still hit the consumed-floor guard, not this callback.
+        with self.assertRaisesRegex(rc.ReleaseError, "publication floor"):
+            lifecycle.publish_versioned(self.args)
+
+    def test_create_reconciliation_does_not_waive_uploaded_bytes(self):
+        lifecycle.prepare(self.args)
+        self.build_current()
+        self.gh.corrupt_upload = True
+        reader = Mock()
+        reader.json.side_effect = lambda path: (
+            copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
+            if path.startswith('releases/') else self.gh.api(path))
+        reader.pages.side_effect = self.gh.pages
+
+        def lose_response(body):
+            created = self.gh.api('releases', 'POST', body)
+            self.gh.releases[created['id']].update(
+                published_at=None, author={'id': 41898282}, assets=[],
+                url=f"https://api.github.com/repos/{REPO}/releases/{created['id']}",
+            )
+            raise rc.AmbiguousCreate('response lost')
+
+        with (patch.object(self.gh, 'create_release_once', side_effect=lose_response) as create,
+              patch.object(rc, 'CreateReadback', return_value=reader),
+              self.assertRaisesRegex(rc.ReleaseError, "^Uploaded bytes differ; draft left unpublished$")):
+            lifecycle.publish_versioned(self.args)
+        create.assert_called_once()
+        self.assertFalse(any(method == "PATCH" for _, method, _ in self.gh.writes))
+
+
+    def _reject_tag_move_after_upload(self, recover):
+        lifecycle.prepare(self.args)
+        plan = self.build_current()
+        upload = self.gh.upload
+        reader = Mock()
+        reader.json.side_effect = lambda path: (
+            copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
+            if path.startswith('releases/') else self.gh.api(path))
+        reader.pages.side_effect = self.gh.pages
+
+        def create(body):
+            result = self.gh.api('releases', 'POST', body)
+            if recover:
+                self.gh.releases[result['id']].update(
+                    published_at=None, author={'id': 41898282}, assets=[],
+                    url=f"https://api.github.com/repos/{REPO}/releases/{result['id']}",
+                )
+                raise rc.AmbiguousCreate('response lost')
+            return result
+
+        def move_tag(*args, **kwargs):
+            result = upload(*args, **kwargs)
+            self.gh.refs[plan['tag']]['object']['sha'] = 'b' * 40
+            return result
+
+        with (patch.object(self.gh, 'create_release_once', side_effect=create),
+              patch.object(self.gh, 'upload', side_effect=move_tag),
+              patch.object(rc, 'CreateReadback', return_value=reader),
+              self.assertRaisesRegex(rc.ReleaseError, 'Tag moved before publication')):
+            lifecycle.publish_versioned(self.args)
+        draft = next(r for r in self.gh.releases.values() if r['tag_name'] == plan['tag'])
+        self.assertTrue(draft['draft'])
+        self.assertTrue(self.gh.assets[draft['id']])
+        self.assertFalse(any(method == 'PATCH' for _, method, _ in self.gh.writes))
+
+    def test_ordinary_publish_rechecks_tag_after_verified_uploads(self):
+        self._reject_tag_move_after_upload(False)
+
+    def test_reconciled_publish_rechecks_tag_after_verified_uploads(self):
+        self._reject_tag_move_after_upload(True)
+
+    def test_create_reconciliation_rejects_changed_default_branch(self):
+        lifecycle.prepare(self.args)
+        plan = self.build_current()
+        reader = Mock()
+        reader.json.side_effect = lambda path: (
+            copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
+            if path.startswith('releases/') else self.gh.api(path))
+        reader.pages.side_effect = self.gh.pages
+
+        def lose_response(body):
+            result = self.gh.api('releases', 'POST', body)
+            self.gh.releases[result['id']].update(
+                published_at=None, author={'id': 41898282}, assets=[],
+                url=f"https://api.github.com/repos/{REPO}/releases/{result['id']}",
+            )
+            self.gh.info['default_branch'] = 'other'
+            raise rc.AmbiguousCreate('response lost')
+
+        with (patch.object(self.gh, 'create_release_once', side_effect=lose_response),
+              patch.object(rc, 'CreateReadback', return_value=reader),
+              self.assertRaisesRegex(rc.ReleaseError, 'Create readback default branch changed')):
+            lifecycle.publish_versioned(self.args)
+        draft = next(r for r in self.gh.releases.values() if r['tag_name'] == plan['tag'])
+        self.assertTrue(draft['draft'])
+        self.assertFalse(self.gh.assets.get(draft['id']))
+        self.assertFalse(any(method == 'PATCH' for _, method, _ in self.gh.writes))
 
 class PreparationTests(unittest.TestCase):
     def test_version_order_and_explicit_breaking_intent(self):

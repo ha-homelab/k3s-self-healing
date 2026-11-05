@@ -28,11 +28,11 @@ import sys
 import tempfile
 import time
 import zipfile
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, TypedDict, cast
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 WORKFLOW = ".github/workflows/release-pipeline.yml"
 GITHUB_HOSTNAME = "github.com"
@@ -125,6 +125,119 @@ class GitHubError(ReleaseError):
     def __init__(self, message: str, not_found: bool = False):
         super().__init__(message)
         self.not_found = not_found
+
+
+class AmbiguousCreate(GitHubError):
+    """Only the original versioned create call may reconcile this outcome."""
+
+
+class CreateReadback:
+    """One bounded, read-only observation after an ambiguous create response.
+
+    No GET retry resets the clock, and no URL supplied by a response is executed.
+    Bounds limit accepted response bytes; subprocess capture itself is in memory.
+    """
+
+    def __init__(self, repository: str):
+        require(bool(REPO_RE.fullmatch(repository)), "Invalid readback repository")
+        self.repo = repository
+        self.deadline = time.monotonic() + 180
+        self.remaining = 64 * 1024 * 1024
+        self.calls = 0
+        self.repository_id: int | None = None
+
+    def check(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        require(remaining > 0, "Create readback deadline exceeded")
+        return remaining
+
+    def get(self, path: str) -> tuple[object, bytes]:
+        """Read an allowed route once, including explicit bounded list pages."""
+        ordinary = any(re.fullmatch(p, path, re.ASCII) for p in API_PATHS["GET"])
+        page = re.fullmatch(r"releases(?:/[1-9]\d*/assets)?\?per_page=100&page=[1-9]\d*", path)
+        require(ordinary or page, "Invalid create readback path")
+        require(not any(p in {".", ".."} for p in unquote(path).split("/")),
+                "Invalid create readback path")
+        self.calls += 1
+        require(self.calls <= 100, "Create readback request limit exceeded")
+        endpoint = f"repos/{self.repo}" + (f"/{path}" if path else "")
+        try:
+            result = subprocess.run(  # nosec B603, B607
+                ["gh", "api", "--hostname", GITHUB_HOSTNAME, "--include",
+                 "--method", "GET", "--", endpoint],
+                capture_output=True, check=False, timeout=min(API_READ_TIMEOUT, self.check()),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise GitHubError("Create readback GET timed out") from error
+        self.check()
+        self.remaining -= len(result.stdout or b"") + len(result.stderr or b"")
+        require(self.remaining >= 0, "Create readback response limit exceeded")
+        status, body = github_http_response(result.stdout or b"")
+        require(result.returncode == 0 and status == 200, "Create readback GET failed")
+        header = (result.stdout or b"")[:len(result.stdout or b"") - len(body)]
+        return parse_json(body, "create readback"), header
+
+    def json(self, path: str) -> object:
+        """Use the same deadline for identity and ledger reads."""
+        return self.get(path)[0]
+
+    def pages(self, path: str) -> list[JSONObject]:
+        """Follow only a validated next-page number; reject duplicate IDs."""
+        records: list[JSONObject] = []
+        seen: set[int] = set()
+        page = 1
+        while True:
+            values, header = self.get(f"{path}?per_page=100&page={page}")
+            require(isinstance(values, list) and len(values) <= 100, "Invalid create inventory page")
+            values = cast(list[object], values)
+            for value in values:
+                require(isinstance(value, dict), "Invalid create inventory record")
+                value = cast(JSONObject, value)
+                identity = positive(value.get("id"), "inventory ID")
+                require(identity not in seen, "Duplicate create inventory ID")
+                seen.add(identity)
+                records.append(value)
+            links = [line.split(b":", 1)[1].strip() for line in header.splitlines()
+                     if line.lower().startswith(b"link:")]
+            require(len(links) <= 1, "Duplicate pagination header")
+            next_pages = []
+            if links:
+                for link in links[0].decode("ascii").split(","):
+                    match = re.fullmatch(r'\s*<([^<>]+)>;\s*rel="(next|prev|first|last)"\s*', link)
+                    require(match is not None, "Invalid create pagination link")
+                    if match and match[2] == "next":
+                        target = urlsplit(match[1])
+                        require(target.scheme == "https" and target.netloc == "api.github.com"
+                                and not target.fragment
+                                and parse_qs(target.query, strict_parsing=True, keep_blank_values=True)
+                                == {"per_page": ["100"], "page": [str(page + 1)]},
+                                "Unexpected create pagination target")
+                        if target.path != f"/repos/{self.repo}/{path}":
+                            numeric = re.fullmatch(
+                                r"/repositories/([1-9][0-9]*)/" + re.escape(path), target.path
+                            )
+                            require(numeric is not None, "Unexpected create pagination path")
+                            if self.repository_id is None:
+                                info = self.json("")
+                                require(isinstance(info, dict), "Invalid readback repository metadata")
+                                info = cast(JSONObject, info)
+                                name, identity = info.get("full_name"), info.get("id")
+                                require(isinstance(name, str) and bool(REPO_RE.fullmatch(name))
+                                        and name.casefold() == self.repo.casefold()
+                                        and type(identity) is int and identity > 0,
+                                        "Create readback repository identity changed")
+                                self.repository_id = cast(int, identity)
+                            require(numeric is not None and int(numeric[1]) == self.repository_id,
+                                    "Create pagination repository ID changed")
+                        next_pages.append(page + 1)
+            require(len(next_pages) <= 1, "Duplicate next-page link")
+            if not next_pages:
+                if len(values) < 100:
+                    return records
+                # A full page without Link is not proof of EOF. Probe the next
+                # explicit page within the same request/time/byte limits.
+            require(bool(values), "Empty create inventory page has a successor")
+            page += 1
 
 
 def require(condition: object, message: str) -> None:
@@ -301,6 +414,46 @@ class GitHub:
         self.workflow_scope_verified = False
         if os.environ.get("RELEASE_REQUIRE_WORKFLOW_SCOPE"):
             self.verify_publication_permissions()
+
+    def create_release_once(self, body: JSONObject) -> JSONObject:
+        """Versioned create only: retain typed ambiguity, never replay the POST."""
+        command = ["gh", "api", "--hostname", GITHUB_HOSTNAME, "--include",
+                   "--method", "POST", "--input", "-", "--", f"{self.base}/releases"]
+        try:
+            result = subprocess.run(  # nosec B603
+                command, input=json_bytes(body), capture_output=True, check=False, timeout=120,
+            )
+        except subprocess.TimeoutExpired as error:
+            if (self._denied_partial_read(error.stdout or b"", error.stderr or b"")
+                    or re.match(rb"HTTP/(?:1\.[01]|2(?:\.0)?) 4\d\d(?:\s|$)", error.stdout or b"")):
+                raise GitHubError("Release create timed out with a denial") from error
+            raise AmbiguousCreate("Release create response timed out") from error
+        denied = (self._denied_partial_read(result.stdout or b"", result.stderr or b"")
+                  or bool(re.match(rb"HTTP/(?:1\.[01]|2(?:\.0)?) 4\d\d(?:\s|$)", result.stdout or b"")))
+        decode_failure = result.returncode == 1 and bool(re.search(
+            rb"(?:^|:\s*)unexpected end of JSON input\s*$", result.stderr or b""))
+        transport = self._transient_read_failure(result) or decode_failure
+        try:
+            status, raw = github_http_response(result.stdout or b"")
+        except GitHubError as error:
+            if transport and not denied:
+                raise AmbiguousCreate("Release create response framing was lost") from error
+            raise GitHubError("Release create response framing failed") from error
+        if denied or 400 <= status < 500:
+            raise GitHubError("Release create was rejected")
+        if (status in {500, 502, 503, 504} and result.returncode in {0, 1}) or (
+                200 <= status < 300 and transport):
+            raise AmbiguousCreate(f"Release create outcome is ambiguous (HTTP {status})")
+        require(result.returncode == 0 and status == 201, "Unexpected release create outcome")
+        try:
+            release = parse_json(raw, "release create")
+        except ReleaseError as error:
+            # Duplicate keys/semantic failures are not response-loss permission.
+            if isinstance(error.__cause__, (json.JSONDecodeError, UnicodeDecodeError)):
+                raise AmbiguousCreate("Release create response JSON was lost") from error
+            raise
+        require(isinstance(release, dict), "Invalid release create response")
+        return cast(JSONObject, release)
 
     def verify_publication_permissions(self) -> None:
         """Fail before writes unless a classic token can publish historical workflows.
@@ -1764,8 +1917,62 @@ def publish(
     return _publish_prepared(gh, tag, sha, directory, prerelease, body)
 
 
+def _reconcile_created_release(
+    gh: GitHub, payload: JSONObject, confirm: Callable[[CreateReadback], None],
+) -> JSONObject:
+    """Return only this invocation's empty draft to the ordinary upload path."""
+    readback = CreateReadback(gh.repo)
+    confirm(readback)
+    first = readback.pages("releases")
+    second = readback.pages("releases")
+    require({row["id"]: row.get("tag_name") for row in first}
+            == {row["id"]: row.get("tag_name") for row in second},
+            "Release inventory changed during readback")
+    matches = [row for row in second if row.get("tag_name") == payload["tag_name"]]
+    require(len(matches) == 1, "Create readback requires one matching release")
+    release_id = positive(matches[0].get("id"), "release ID")
+
+    def checked_release(value: object) -> JSONObject:
+        require(isinstance(value, dict), "Invalid create readback release")
+        value = cast(JSONObject, value)
+        require(type(value.get("id")) is int and value["id"] == release_id
+                and value.get("url") == f"https://api.github.com/repos/{gh.repo}/releases/{release_id}"
+                and value.get("published_at") is None and "published_at" in value
+                and value.get("assets") == []
+                and isinstance(value.get("author"), dict)
+                and all(type(value.get(key)) is type(expected) and value[key] == expected
+                        for key, expected in payload.items() if key != "make_latest"),
+                "Create readback release differs from the exact request")
+        positive(cast(JSONObject, value["author"]).get("id"), "release author ID")
+        return value
+
+    original = [row for row in first if row.get("tag_name") == payload["tag_name"]]
+    require(len(original) == 1, "Create readback original inventory is contradictory")
+    listed = checked_release(matches[0])
+    require(checked_release(original[0]).get("author") == listed.get("author"),
+            "Create readback listed author changed")
+    release = checked_release(readback.json(f"releases/{release_id}"))
+    require(release.get("author") == listed.get("author"), "Create readback author differs from inventory")
+    require(not readback.pages(f"releases/{release_id}/assets"), "Create readback draft is not empty")
+    tag = payload["tag_name"]
+    ref = readback.json(f"git/ref/tags/{tag}")
+    require(isinstance(ref, dict) and ref.get("ref") == f"refs/tags/{tag}"
+            and isinstance(ref.get("object"), dict)
+            and ref["object"].get("type") == "commit"
+            and ref["object"].get("sha") == payload["target_commitish"],
+            "Create readback tag source changed")
+    confirm(readback)
+    final = checked_release(readback.json(f"releases/{release_id}"))
+    require(final.get("author") == release.get("author"), "Create readback author changed")
+    require(not readback.pages(f"releases/{release_id}/assets"), "Create readback draft gained assets")
+    readback.check()
+    print(f"Reconciled the single release-create call for {gh.repo}, release {release_id}", file=sys.stderr)
+    return final
+
+
 def _publish_prepared(
-    gh: GitHub, tag: str, sha: str, directory: Path, prerelease: bool, body: str
+    gh: GitHub, tag: str, sha: str, directory: Path, prerelease: bool, body: str,
+    *, confirm_create: Callable[[CreateReadback], None] | None = None,
 ) -> JSONObject:
     """Internal transaction after callers validate immutable source-bound notes.
 
@@ -1779,22 +1986,17 @@ def _publish_prepared(
     cast(
         JSONObject, gh.api("git/refs", "POST", {"ref": f"refs/tags/{tag}", "sha": sha})
     )
-    release = cast(
-        JSONObject,
-        gh.api(
-            "releases",
-            "POST",
-            {
-                "tag_name": tag,
-                "target_commitish": sha,
-                "name": tag,
-                "body": body,
-                "draft": True,
-                "prerelease": prerelease,
-                "make_latest": "false",
-            },
-        ),
-    )
+    payload: JSONObject = {"tag_name": tag, "target_commitish": sha, "name": tag,
+                           "body": body, "draft": True, "prerelease": prerelease,
+                           "make_latest": "false"}
+    if confirm_create is None:
+        release = cast(JSONObject, gh.api("releases", "POST", payload))
+    else:
+        try:
+            release = gh.create_release_once(payload)
+        except AmbiguousCreate as error:
+            print(f"{error}; checking only this call's draft without replay", file=sys.stderr)
+            release = _reconcile_created_release(gh, payload, confirm_create)
     require(
         release.get("draft") is True and release.get("tag_name") == tag,
         "Unexpected draft release response",
@@ -1811,6 +2013,14 @@ def _publish_prepared(
     )
     for item in uploaded:
         verify_uploaded_asset(gh, item, expected[cast(str, item["name"])])
+    ref = cast(JSONObject, gh.api(f"git/ref/tags/{quote(tag, safe='')}"))
+    require(
+        isinstance(ref, dict) and ref.get("ref") == f"refs/tags/{tag}"
+        and isinstance(ref.get("object"), dict)
+        and cast(JSONObject, ref["object"]).get("type") == "commit"
+        and cast(JSONObject, ref["object"]).get("sha") == sha,
+        "Tag moved before publication; draft left unpublished",
+    )
     result = cast(
         JSONObject,
         gh.api(

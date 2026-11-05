@@ -12,6 +12,7 @@
     ".github/release-tests/test_public_source_package.py",
     ".github/release-tests/test_release_client_consumer.py",
     ".github/release-tests/test_release_control.py",
+    ".github/release-tests/test_release_create.py",
     ".github/release-tests/test_release_import_modes.py",
     ".github/release-tests/test_release_notes.py",
     ".github/release-tests/test_release_read_safety.py",

@@ -308,7 +308,7 @@ def begin_publication(
     run_id: int,
     parent: dict[str, object] | None = None,
     promotion: bool = False,
-) -> None:
+) -> bytes:
     """Consume the package number with CAS before the first public tag mutation.
 
     Publication failure still consumes the number. A candidate or final build
@@ -326,3 +326,5 @@ def begin_publication(
         _verify_reservation(gh, state, plan, run_id, parent)
     state["publication_floor"] = cast(int, plan["build_number"])
     write_state(gh, state, previous)
+    # In-memory confirmation for this call only; never a persisted resume token.
+    return rc.json_bytes(state)
