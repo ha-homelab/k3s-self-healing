@@ -1447,6 +1447,123 @@ class LifecycleTests(unittest.TestCase):  # pylint: disable=too-many-public-meth
         self.assertEqual(result["tag"], plan["tag"])
         self.assertEqual(json.loads(rc.EVIDENCE.read_bytes())["source_sha"], SHA)
 
+    def _reject_newer_automatic_source_snapshot(self, scheduled):
+        if scheduled:
+            self.build_schedule()
+        else:
+            self.automatic_build()
+        ledger = copy.deepcopy(self.gh.ledger)
+        writes = copy.deepcopy(self.gh.ledger_writes)
+        notes = rc.release_notes
+
+        def advance_after_last_supersession_check(*args, **kwargs):
+            result = notes(*args, **kwargs)
+            self.advance_default()
+            return result
+
+        with (patch.object(rc, 'release_notes', side_effect=advance_after_last_supersession_check),
+              self.assertRaisesRegex(rc.ReleaseError, 'Default branch moved before source snapshot')):
+            lifecycle.publish_versioned(self.args)
+        self.assertEqual(self.gh.ledger, ledger)
+        self.assertEqual(self.gh.ledger_writes, writes)
+        self.assertEqual(self.gh.writes, [])
+
+    def test_automatic_beta_rejects_newer_source_snapshot(self):
+        self._reject_newer_automatic_source_snapshot(False)
+
+    def test_scheduled_nightly_rejects_newer_source_snapshot(self):
+        self._reject_newer_automatic_source_snapshot(True)
+
+    def test_automatic_source_snapshot_rejects_missing_or_nonobject_ref(self):
+        self.automatic_build()
+        ledger = copy.deepcopy(self.gh.ledger)
+        writes = copy.deepcopy(self.gh.ledger_writes)
+        notes, api = rc.release_notes, self.gh.api
+        for response in (None, [], {}, {"object": None}, {"object": []}, {"object": "invalid"}):
+            captured = False
+
+            def finish_notes(*args, **kwargs):
+                nonlocal captured
+                result = notes(*args, **kwargs)
+                captured = True
+                return result
+
+            def malformed_capture(path, *args, **kwargs):
+                if captured and path == "git/ref/heads/main":
+                    return response
+                return api(path, *args, **kwargs)
+
+            with (self.subTest(response=response),
+                  patch.object(rc, "release_notes", side_effect=finish_notes),
+                  patch.object(self.gh, "api", side_effect=malformed_capture),
+                  self.assertRaisesRegex(rc.ReleaseError, "Default branch moved before source snapshot")):
+                lifecycle.publish_versioned(self.args)
+            self.assertEqual(self.gh.ledger, ledger)
+            self.assertEqual(self.gh.ledger_writes, writes)
+            self.assertEqual(self.gh.writes, [])
+
+    def _reject_automatic_source_move_after_upload(self, scheduled, recover, rename=False):
+        plan = self.build_schedule() if scheduled else self.automatic_build()
+        upload = self.gh.upload
+        reader = Mock()
+        reader.json.side_effect = lambda path: (
+            copy.deepcopy(self.gh.releases[int(path.split('/')[1])])
+            if path.startswith('releases/') else self.gh.api(path))
+        reader.pages.side_effect = self.gh.pages
+
+        def create(body):
+            result = self.gh.api('releases', 'POST', body)
+            if recover:
+                self.gh.releases[result['id']].update(
+                    published_at=None, author={'id': 41898282}, assets=[],
+                    url=f"https://api.github.com/repos/{REPO}/releases/{result['id']}",
+                )
+                raise rc.AmbiguousCreate('response lost')
+            return result
+
+        def move_source(*args, **kwargs):
+            result = upload(*args, **kwargs)
+            if rename:
+                self.gh.info['default_branch'] = 'replacement'
+            else:
+                self.advance_default()
+            return result
+
+        with (patch.object(self.gh, 'create_release_once', side_effect=create) as called,
+              patch.object(self.gh, 'upload', side_effect=move_source),
+              patch.object(rc, 'CreateReadback', return_value=reader),
+              self.assertRaisesRegex(rc.ReleaseError, 'Automatic publication default (branch|source) changed')):
+            lifecycle.publish_versioned(self.args)
+        called.assert_called_once()
+        draft = next(r for r in self.gh.releases.values() if r['tag_name'] == plan['tag'])
+        self.assertTrue(draft['draft'])
+        self.assertTrue(self.gh.assets[draft['id']])
+        self.assertEqual(self.gh.ledger['publication_floor'], plan['build_number'])
+        self.assertEqual(len(self.gh.ledger_writes), 2)
+        self.assertFalse(any(method == 'PATCH' for _, method, _ in self.gh.writes))
+
+    def test_automatic_beta_rechecks_source_after_upload(self):
+        self._reject_automatic_source_move_after_upload(False, False)
+
+    def test_reconciled_automatic_beta_rechecks_source_after_upload(self):
+        self._reject_automatic_source_move_after_upload(False, True)
+
+    def test_scheduled_nightly_rechecks_source_after_upload(self):
+        self._reject_automatic_source_move_after_upload(True, False)
+
+    def test_automatic_beta_rechecks_default_name_after_upload(self):
+        self._reject_automatic_source_move_after_upload(False, False, rename=True)
+
+    def test_manual_rc_preserves_permitted_historical_source(self):
+        self.start_run('rc', 100)
+        lifecycle.prepare(self.args)
+        plan = self.build_current()
+        self.advance_default()
+        result = lifecycle.publish_versioned(self.args)
+        self.assertEqual(result['status'], 'published')
+        self.assertEqual(result['tag'], plan['tag'])
+        self.assertEqual(self.gh.refs[plan['tag']]['object']['sha'], SHA)
+
     def test_early_and_late_supersession_preserve_reservation_without_publication(self):
         plan = self.automatic_build()
         ledger = copy.deepcopy(self.gh.ledger)
