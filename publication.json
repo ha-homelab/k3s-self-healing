@@ -26,6 +26,7 @@
     ".github/requirements-fuzz.in",
     ".github/requirements-fuzz.txt",
     ".github/requirements-workflow-contracts.txt",
+    ".github/workflow-tests/test_ci_release_scope_contract.py",
     ".github/workflow-tests/test_workflow_yaml_contracts.py",
     ".github/workflows/auto-approve.yml",
     ".github/workflows/auto-merge.yml",
