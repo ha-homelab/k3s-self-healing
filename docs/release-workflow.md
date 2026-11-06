@@ -165,3 +165,19 @@ only proven documentation-only PR and merge-queue changes skip the two Home
 Assistant runtime suites.
 Source, documentation, publication-inventory and secret checks still run; missing
 or uncertain scope and full release qualification run the runtime suites.
+
+### Verify a documentation-only run
+
+For a pull request that changes only ordinary documentation (not release notes or
+other declared build inputs), open its **Quality gate** run and verify:
+
+1. **Change scope** reports `run=false` and `reason=documentation-only`.
+2. **check-0 / source** succeeds, including the documentation, publication
+   inventory and secret checks. CodeQL, CI configuration contracts and the
+   final **CI gate** must also succeed.
+3. **check-0 / home-assistant** is skipped; no Home Assistant runtime container
+   should be started by that job.
+
+A source change, unknown classification or full release qualification must run
+both Home Assistant runtime checks. Main-push qualification remains full even
+when the merged change only updates documentation.
