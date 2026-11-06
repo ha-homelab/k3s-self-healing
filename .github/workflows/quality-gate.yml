@@ -34,9 +34,9 @@ jobs:
       - id: scope
         name: Classify documentation and build inputs
         env:
-          DOCUMENTATION_PATHS: '[]'
-          REQUIRED_PATHS: '[]'
-          FORCE_FULL: 'true'
+          DOCUMENTATION_PATHS: "[\"GOVERNANCE.md\", \"ROADMAP.md\"]"
+          REQUIRED_PATHS: "[\"CHANGELOG.md\"]"
+          FORCE_FULL: "${{ inputs.force-full && 'true' || 'false' }}"
         run: |
           args=()
           if [[ "$FORCE_FULL" == true ]]; then args+=(--force); fi
@@ -49,7 +49,6 @@ jobs:
     needs:
       - scope
       - workflow-contracts
-    if: ${{ needs.scope.outputs.run == 'true' }}
   check-1:
     uses: ./.github/workflows/codeql.yml
     permissions:
@@ -59,7 +58,6 @@ jobs:
     needs:
       - scope
       - workflow-contracts
-    if: ${{ needs.scope.outputs.run == 'true' }}
   workflow-contracts:
     name: CI configuration contracts
     runs-on: ${{ fromJSON((vars.CI_RUNNER_MODE == 'self-hosted' || vars.CI_RUNNER_MODE == 'k3s') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (vars.CI_RUNNER_LABELS || '[]') || '["ubuntu-latest"]') }}
@@ -95,7 +93,6 @@ jobs:
           if-no-files-found: ignore
     needs:
       - scope
-    if: ${{ needs.scope.outputs.run == 'true' }}
   release-contracts:
     name: Release tooling contracts
     runs-on: ${{ fromJSON((vars.CI_RUNNER_MODE == 'self-hosted' || vars.CI_RUNNER_MODE == 'k3s') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch"]'), github.event_name) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (vars.CI_RUNNER_LABELS || '[]') || '["ubuntu-latest"]') }}
@@ -142,7 +139,7 @@ jobs:
           import json, os
           results = json.loads(os.environ['RESULTS'])
           expected = ['check-0', 'check-1', 'release-contracts', 'scope', 'workflow-contracts']
-          always = ['scope']
+          always = ['check-0', 'check-1', 'scope', 'workflow-contracts']
           if set(results) != set(expected):
               raise SystemExit('Validation job inventory differs')
           scope = results['scope']

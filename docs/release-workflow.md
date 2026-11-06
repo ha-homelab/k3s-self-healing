@@ -11,13 +11,31 @@ gate. Unknown files, incomplete history, code, workflows and lockfile changes ru
 full validation.
 
 The optional `change_scope` policy provides exact `documentation_paths`, exact
-`required_paths` for documentation used as a build input, and
+`required_paths` for documentation used as a build or release-contract input, and
 `always_validate_workflows` for independently required checks. Documentation paths
 cannot exempt source, tests, fixtures, build configuration or dependencies.
-Manual dispatch, scheduled runs and release qualification remain full. Only with
-explicit `change_scope` opt-in does a documentation-only push stop before release
-preparation, version allocation, artifact builds or publication. This does not
-change the configured nightly policy.
+Documentation-only skipping applies to PR and merge-queue Quality checks only.
+Main pushes, manual dispatch, scheduled runs and release qualification remain
+full, including required security and release-contract checks. This preserves
+current-source release guarantees and the configured nightly policy.
+
+### Updating documentation-only CI routing
+
+The `toolkit_revision` in `.release-policy.json` records the historical imported
+release stack; it does not select the generator used for a later update. Keep
+existing action pins and release implementation when changing this routing.
+From a checkout of `victron-venus/venus-os-ci-toolkit` at commit
+`56863cf0beed5ab97c4f27d7adb5aedb83c758d5`, run:
+
+```sh
+python3 scripts/install_release.py /path/to/this-repository --change-scope-only
+python3 scripts/install_release.py /path/to/this-repository --change-scope-only --check
+```
+
+Review the resulting diff and run the workflow contract tests. The local
+`test_ci_release_scope_contract.py` test rejects any release entry point that
+stops requiring full validation. Custom validator additions still need an
+explicit graph review; this narrow command does not add new validators.
 
 ## Local checks
 
