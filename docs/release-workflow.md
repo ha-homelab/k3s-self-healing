@@ -24,12 +24,22 @@ current-source release guarantees and the configured nightly policy.
 The `toolkit_revision` in `.release-policy.json` records the historical imported
 release stack; it does not select the generator used for a later update. Keep
 existing action pins and release implementation when changing this routing.
-From a checkout of `victron-venus/venus-os-ci-toolkit` at commit
-`56863cf0beed5ab97c4f27d7adb5aedb83c758d5`, run:
+From this repository's root, set `TOOLKIT` below to a clean checkout of
+`victron-venus/venus-os-ci-toolkit` at commit
+`56863cf0beed5ab97c4f27d7adb5aedb83c758d5`. The subshell stops before running
+the generator if the revision or cleanliness check fails.
 
 ```sh
-python3 scripts/install_release.py /path/to/this-repository --change-scope-only
-python3 scripts/install_release.py /path/to/this-repository --change-scope-only --check
+(
+  set -eu
+  TOOLKIT=/path/to/fixed/venus-os-ci-toolkit
+  toolkit_head=$(git -C "$TOOLKIT" rev-parse HEAD)
+  test "$toolkit_head" = 56863cf0beed5ab97c4f27d7adb5aedb83c758d5
+  toolkit_status=$(git -C "$TOOLKIT" status --porcelain=v1 --untracked-files=all)
+  test -z "$toolkit_status"
+  python3 "$TOOLKIT/scripts/install_release.py" . --change-scope-only
+  python3 "$TOOLKIT/scripts/install_release.py" . --change-scope-only --check
+)
 ```
 
 Review the resulting diff and run the workflow contract tests. The local
