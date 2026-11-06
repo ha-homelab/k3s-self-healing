@@ -43,6 +43,8 @@ jobs:
           python3 scripts/change_scope.py "${args[@]}" --documentation-paths-json "$DOCUMENTATION_PATHS" --required-paths-json "$REQUIRED_PATHS"
   check-0:
     uses: ./.github/workflows/validate.yml
+    with:
+      run-home-assistant-runtime: ${{ needs.scope.outputs.run != 'false' || needs.scope.outputs.reason != 'documentation-only' }}
     permissions:
       contents: read
       actions: read
