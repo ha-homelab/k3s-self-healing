@@ -129,6 +129,7 @@
     "native_backup/restore.py",
     "native_backup/runner.py",
     "publication.json",
+    "renovate.json",
     "requirements-validation.txt",
     "runtime_tests/test_core_updates.py",
     "runtime_tests/test_hacs_maintenance.py",
