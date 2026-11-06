@@ -158,3 +158,10 @@ References: [GitHub schedules](https://docs.github.com/en/actions/reference/work
 Run `python3 scripts/release.py prepare-version --pr` from the clean default-branch HEAD. The command refreshes tags and opens a PR with synchronized owned version fields. An existing unreleased base is retained; use `--bump minor`, `--bump major`, or `--version X.Y.Z` for explicit intent. See [version plans](VERSIONING.md) for build overlays, the dedicated allocation ledger and recovery.
 
 A local candidate package also needs the saved `.release-plan.json` at its exact source commit. Restore the `version_plan` object from the published `release-manifest.json` into a disposable checkout before `release.py package`; do not invent a tag or native counter locally. Ordinary development builds can use the project's native build command and explicitly local version identity.
+
+The local `validate.yml` runtime input is a repository-specific adapter. Keep its
+`run-home-assistant-runtime` binding and workflow contract test when regenerating:
+only proven documentation-only PR and merge-queue changes skip the two Home
+Assistant runtime suites.
+Source, documentation, publication-inventory and secret checks still run; missing
+or uncertain scope and full release qualification run the runtime suites.

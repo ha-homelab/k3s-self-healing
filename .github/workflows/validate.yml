@@ -1,6 +1,11 @@
 name: Validate public source
 'on':
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      run-home-assistant-runtime:
+        description: Run the pinned Home Assistant runtime suites
+        type: boolean
+        default: true
 permissions:
   contents: read
 jobs:
@@ -42,6 +47,7 @@ jobs:
 
         '
   home-assistant:
+    if: ${{ inputs.run-home-assistant-runtime }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
