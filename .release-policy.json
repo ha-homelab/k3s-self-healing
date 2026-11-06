@@ -20,7 +20,8 @@
   "notes": [
     "The original deterministic source archive and companion SHA-256 file are retained. Publication inventory, privacy checks and all existing source/runtime checks remain required. Reusable HA source is maintained in this repository.",
     "SOURCE_VERSION identifies the portable source collection; independently versioned Helm chart and upstream HA release pins are preserved.",
-    "Only a verified frozen SOURCE_VERSION overlay may differ from the committed snapshot. Ordinary local packaging still requires an entirely clean commit. No restore, cluster mutation, deployment or physical acceptance is performed."
+    "Only a verified frozen SOURCE_VERSION overlay may differ from the committed snapshot. Ordinary local packaging still requires an entirely clean commit. No restore, cluster mutation, deployment or physical acceptance is performed.",
+    "The configured release-note file remains a full-validation input so its current release section, upgrade notes and security notes are checked."
   ],
   "versioning": {
     "schema": 1,
@@ -48,5 +49,18 @@
   "fuzzing": {
     "toolkit_ref": "6f0bf114a398f9c2b7e5407042c3828a8cc28b40"
   },
-  "release_contract_python": "3.14"
+  "release_contract_python": "3.14",
+  "change_scope": {
+    "documentation_paths": [
+      "GOVERNANCE.md",
+      "ROADMAP.md"
+    ],
+    "required_paths": [
+      "CHANGELOG.md"
+    ],
+    "always_validate_workflows": [
+      "codeql.yml",
+      "validate.yml"
+    ]
+  }
 }
