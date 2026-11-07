@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PIN = "c3d39182d5a6a33dfff6c890e8f05f27957c3bf7"
+PIN = "65c3a644c440fcd5f95d94b6c2fa2be1df58249c"
 
 
 class MetadataAutomationTests(unittest.TestCase):
