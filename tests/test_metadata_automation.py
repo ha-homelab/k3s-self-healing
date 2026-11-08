@@ -5,7 +5,8 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-PIN = "65c3a644c440fcd5f95d94b6c2fa2be1df58249c"
+# renovate: toolkit-reference
+TOOLKIT_REF = "0047a13b5eb79dfa770e31070a83e9696ddd36d1"
 
 
 class MetadataAutomationTests(unittest.TestCase):
@@ -23,7 +24,7 @@ class MetadataAutomationTests(unittest.TestCase):
                 value = workflow["jobs"][job]
                 self.assertNotIn("steps", value)
                 self.assertNotIn("runs-on", value)
-                self.assertEqual(value["uses"], f"victron-venus/venus-os-ci-toolkit/.github/workflows/{shared}@{PIN}")
+                self.assertEqual(value["uses"], f"victron-venus/venus-os-ci-toolkit/.github/workflows/{shared}@{TOOLKIT_REF}")
                 self.assertEqual(value["secrets"], {"BOT_PAT": "${{ secrets.BOT_PAT }}"})
                 self.assertEqual(workflow["permissions"]["contents"], "read")
                 self.assertNotIn("pull_request", workflow["on"])
