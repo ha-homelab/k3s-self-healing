@@ -13,6 +13,7 @@ from aiohttp import web
 import paho.mqtt.client as mqtt
 
 from model import ACTIVE, Store, public_state, version_tuple
+from recorder_budget import BudgetGuard, supervise_budget
 from runtime import Runtime, image_for, release
 from worker import Source, run
 
@@ -95,7 +96,10 @@ def create_app(store, runtime, settings, token, worker=run):
         try:
             body = await request.json()
             await asyncio.to_thread(runtime.maintenance_idle)
-            accepted = store.approve(body)
+            with store.lock:
+                if guard := app.get('recorder_budget_guard'):
+                    guard.assert_update_idle()
+                accepted = store.approve(body)
         except (ValueError, TypeError, json.JSONDecodeError):
             return web.json_response({"error": "Invalid approval request"}, status=422)
         except RuntimeError:
@@ -161,15 +165,24 @@ async def supervise(app):
 
 
 async def start_background(app):
+    budget = app["settings"].get("recorder_budget", {})
+    guard = None
+    if budget.get("enabled") is True:
+        guard = BudgetGuard(budget, app["runtime"], app["store"])
     app["supervisor"] = asyncio.create_task(supervise(app))
+    if guard is not None:
+        app['recorder_budget_guard'] = guard
+        app["recorder_budget_supervisor"] = asyncio.create_task(supervise_budget(guard))
 
 
 async def stop_background(app):
-    app["supervisor"].cancel()
-    try:
-        await app["supervisor"]
-    except asyncio.CancelledError:
-        pass
+    for name in ("supervisor", "recorder_budget_supervisor"):
+        if task := app.get(name):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 def recover_interrupted(store):

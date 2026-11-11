@@ -78,6 +78,8 @@ not installed by the base Kustomization.
 
 - [Core updates and HA packages](docs/maintenance.md)
 - [Backup, storage and recovery](docs/recovery.md)
+- [Recorder storage budget and backpressure](docs/recorder-storage-budget.md)
+- [Recorder orphan deletion guard](docs/recorder-orphan-guard.md)
 - [Publication and privacy policy](docs/publication.md)
 - [Security and reporting](SECURITY.md)
 

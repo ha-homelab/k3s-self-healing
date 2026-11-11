@@ -86,6 +86,9 @@ def main():
     go2rtc_guard = {'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'ha-go2rtc-startup-guard'},
                     'data': {'51-go2rtc-startup.py': (ROOT / 'helm/go2rtc-startup-guard/patch.py').read_text()}}
     subprocess.run(kn + ['apply', '-f', '-'], input=json.dumps(go2rtc_guard), text=True, check=True)
+    recorder_guard = {'apiVersion': 'v1', 'kind': 'ConfigMap', 'metadata': {'name': 'ha-recorder-orphan-guard'},
+                      'data': {'53-recorder-orphan.py': (ROOT / 'helm/recorder-orphan-guard/patch.py').read_text()}}
+    subprocess.run(kn + ['apply', '-f', '-'], input=json.dumps(recorder_guard), text=True, check=True)
     subprocess.run(kn + ['wait', '--for=condition=Ready', 'pod/ha-recovery-restore', '--timeout=900s'], check=True)
     # Stream without a second local archive. Keep remote stdout open until all
     # stdin is consumed: a last-command shell `cat > file` closes stdout early

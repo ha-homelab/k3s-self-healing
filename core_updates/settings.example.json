@@ -12,5 +12,10 @@
   "required_domains": [
     "mqtt"
   ],
-  "health_timeout_seconds": 900
+  "health_timeout_seconds": 900,
+  "recorder_budget": {
+    "enabled": false,
+    "schema": "homeassistant",
+    "purge_qualified": false
+  }
 }

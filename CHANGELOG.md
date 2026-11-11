@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.1] - 2026-11-11
+
+### Fixed
+
+- Guard Recorder attribute/event-data deletion with an atomic reference check,
+  retaining foreign keys and native batching. The workaround accepts the exact
+  reviewed HA 2026.11.0/2026.11.1 source and leaves other versions unchanged.
+- Carry the same guard through native recovery without altering stored devices,
+  configuration, statistics, or unrelated databases.
+
+### Added
+
+- Opt-in Recorder storage supervision in the existing Core updater: five-minute
+  physical-size checks, one-day purge requests with durable admission, and a
+  latched raw-recording pause at 4.5 GB. Core approval and purge admission share
+  a lock; unknown purge outcomes cannot be replayed automatically.
+- A schema-scoped DBA procedure for physical-size reporting without granting HA
+  global PROCESS access, plus a narrow single-host MySQL egress rule.
+
+### Upgrade and limits
+
+Install and verify the guarded runtime and read-only storage procedure before
+qualifying automatic purge. The budget guard is disabled in the example settings;
+operators opt in with their private schema/address. The 5 GB target is an operating
+budget, not a hard quota: statistics and other database writes continue during a
+raw-recording pause. Resuming a latched pause requires reviewed manual recovery.
+See `docs/recorder-storage-budget.md` and `docs/recorder-orphan-guard.md`.
+
 ## [0.2.0] - 2026-11-03
 
 ### Added
