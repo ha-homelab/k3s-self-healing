@@ -19,7 +19,7 @@
 - A schema-scoped DBA procedure for physical-size reporting without granting HA
   global PROCESS access, plus a narrow single-host MySQL egress rule.
 
-### Upgrade and limits
+### Upgrade
 
 Install and verify the guarded runtime and read-only storage procedure before
 qualifying automatic purge. The budget guard is disabled in the example settings;
@@ -27,6 +27,14 @@ operators opt in with their private schema/address. The 5 GB target is an operat
 budget, not a hard quota: statistics and other database writes continue during a
 raw-recording pause. Resuming a latched pause requires reviewed manual recovery.
 See `docs/recorder-storage-budget.md` and `docs/recorder-orphan-guard.md`.
+
+### Security
+
+Database access reuses the existing private Recorder connection and HA API token.
+Only the schema-scoped size procedure needs a DBA-defined execution context;
+HA receives no global PROCESS privilege. Public examples contain no installation
+identifiers. Guarded deletes preserve foreign keys, and a stale or unknown purge
+receipt blocks Core approval until its outcome is reviewed.
 
 ## [0.2.0] - 2026-11-03
 
