@@ -1,0 +1,13 @@
+# Apply the ConfigMap first; merge these entries into existing volume/mount lists.
+# Do not replace other guards by passing this file as a blind list override.
+# Qualified for exact HA 2026.11.0/2026.11.1 queries.py only.
+additionalVolumes:
+  - name: recorder-orphan-guard
+    configMap:
+      name: ha-recorder-orphan-guard
+      defaultMode: 0755
+additionalMounts:
+  - name: recorder-orphan-guard
+    mountPath: /etc/cont-init.d/53-recorder-orphan.py
+    subPath: 53-recorder-orphan.py
+    readOnly: true

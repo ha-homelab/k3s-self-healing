@@ -178,6 +178,25 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(preflight['egress'][1]['to'], policy['egress'][-1]['to'])
         self.assertEqual(preflight['egress'][1]['ports'], [{'protocol': 'TCP', 'port': 443}])
 
+    def test_enabled_recorder_guard_adds_only_an_exact_database_destination(self):
+        self.config['data']['settings.json'] = json.dumps({'recorder_budget': {
+            'enabled': True, 'database_ipv4_cidr': '192.0.2.7/32', 'database_port': 3306}})
+        self.objects = INSTALL.render(self.args, self.cluster, self.config)
+        egress = self.one('NetworkPolicy', 'ha-core-updater')['spec']['egress']
+        self.assertEqual(egress[-2], {
+            'to': [{'ipBlock': {'cidr': '192.0.2.7/32'}}],
+            'ports': [{'protocol': 'TCP', 'port': 3306}],
+        })
+        self.assertEqual(len(self.one('NetworkPolicy', 'ha-core-preflight')['spec']['egress']), 2)
+
+    def test_recorder_guard_cannot_open_a_subnet_or_invalid_port(self):
+        for cidr, port in [('192.0.2.0/24', 3306), ('::1/128', 3306), ('192.0.2.7/32', True),
+                           ('192.0.2.7/32', 0), ('192.0.2.7/32', 65536)]:
+            self.config['data']['settings.json'] = json.dumps({'recorder_budget': {
+                'enabled': True, 'database_ipv4_cidr': cidr, 'database_port': port}})
+            with self.subTest(cidr=cidr, port=port), self.assertRaises(ValueError):
+                INSTALL.render(self.args, self.cluster, self.config)
+
     def test_only_named_statefulset_and_backup_cronjob_can_be_patched(self):
         role = self.one('Role')
         writes = [rule for rule in role['rules'] if {'patch', 'update'} & set(rule['verbs'])]

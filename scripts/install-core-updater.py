@@ -226,6 +226,17 @@ def render(args, cluster, configmap, root=ROOT, credential_checksum=None):
             spec['egress'][3]['to'] = [{'podSelector': {'matchLabels': cluster['mqtt_selector']}}]
             if cluster['mqtt_ip'] != 'None':
                 spec['egress'][3]['to'].append({'ipBlock': {'cidr': host_cidr(cluster['mqtt_ip'])}})
+            budget = json.loads(configmap['data'].get('settings.json', '{}')).get('recorder_budget', {})
+            if budget.get('enabled') is True:
+                destination = ipaddress.ip_network(budget.get('database_ipv4_cidr', ''), strict=True)
+                port = budget.get('database_port', 3306)
+                if (destination.version != 4 or destination.prefixlen != 32
+                        or type(port) is not int or not 1 <= port <= 65535):
+                    raise ValueError('Recorder egress requires one IPv4 host /32 and a valid port')
+                spec['egress'].insert(-1, {
+                    'to': [{'ipBlock': {'cidr': str(destination)}}],
+                    'ports': [{'protocol': 'TCP', 'port': port}],
+                })
     return [configmap, *objects]
 
 

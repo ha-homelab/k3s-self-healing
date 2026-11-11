@@ -68,6 +68,24 @@ spec:
           volumeMounts:
             - {name: patched, mountPath: /patched}
             - {name: go2rtc-guard, mountPath: /go2rtc-guard, readOnly: true}
+        - name: recorder-orphan-guard
+          image: {{ .Values.image | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - >-
+              cp /usr/src/homeassistant/homeassistant/components/recorder/queries.py /patched/recorder-queries.py;
+              python /recorder-guard/53-recorder-orphan.py /patched/recorder-queries.py
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: '1', memory: 128Mi}
+          volumeMounts:
+            - {name: patched, mountPath: /patched}
+            - {name: recorder-guard, mountPath: /recorder-guard, readOnly: true}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.nodeName | quote }}
       hostNetwork: {{ .Values.hostNetwork }}
@@ -105,6 +123,7 @@ spec:
             - {name: runtime, mountPath: /tmp}
             - {name: patched, mountPath: /usr/src/homeassistant/homeassistant/components/smartthings/time.py, subPath: time.py, readOnly: true}
             - {name: patched, mountPath: /usr/src/homeassistant/homeassistant/components/go2rtc/server.py, subPath: go2rtc-server.py, readOnly: true}
+            - {name: patched, mountPath: /usr/src/homeassistant/homeassistant/components/recorder/queries.py, subPath: recorder-queries.py, readOnly: true}
           startupProbe:
             httpGet: {path: /, port: http}
             periodSeconds: 10
@@ -123,6 +142,9 @@ spec:
         - name: go2rtc-guard
           configMap:
             name: ha-go2rtc-startup-guard
+        - name: recorder-guard
+          configMap:
+            name: ha-recorder-orphan-guard
         - name: runtime
           emptyDir: {sizeLimit: 512Mi}
         - name: config
