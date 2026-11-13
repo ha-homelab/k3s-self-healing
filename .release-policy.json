@@ -47,7 +47,7 @@
     ]
   },
   "fuzzing": {
-    "toolkit_ref": "579fdb4f24e500bf601bc642422787c9be70684c"
+    "toolkit_ref": "ae771fd5815338336bbf5f887ad1c2f0e1203ee6"
   },
   "release_contract_python": "3.14",
   "change_scope": {
