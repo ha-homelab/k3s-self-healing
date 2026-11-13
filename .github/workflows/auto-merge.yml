@@ -30,7 +30,7 @@ concurrency:
 jobs:
   auto-merge:
     # Event metadata only wakes the evaluator; it independently reads live PRs.
-    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml@ae771fd5815338336bbf5f887ad1c2f0e1203ee6 # main
+    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-merge.yml@6472c9fea1eb72f9c706548092036de36230b7aa # main
     with:
       pr-author: 4alvit,californiantiramisu,dependabot[bot],renovate[bot]
       merge-method: squash
