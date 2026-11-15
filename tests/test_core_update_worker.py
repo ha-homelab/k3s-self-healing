@@ -1,6 +1,6 @@
 """Approval updates journal ambiguous writes and never downgrade migrated HA."""
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -137,7 +137,10 @@ class FakeRuntime:
 
     def preflight(self, name, image):
         self.events.append(('preflight', name))
-        assert self.store.data['backup_id'] == 'exact-native-backup'
+        if self.store.data.get('backup_mode') == 'scheduled':
+            assert not self.store.data.get('backup_id')
+        else:
+            assert self.store.data['backup_id'] == 'exact-native-backup'
         if self.preflight_error:
             raise RuntimeError('Target configuration rejected')
 
@@ -188,7 +191,7 @@ class WorkerFlowTests(unittest.TestCase):
         self.rt.current_image = TARGET
         return ''
 
-    def run_worker(self, **settings):
+    def run_worker(self, resume_merged=False, **settings):
         receipt_path = Mock()
         receipt_path.read_text.side_effect = lambda: json.dumps(self.rt.receipt)
         with patch.object(worker, 'Source', return_value=self.source), \
@@ -197,7 +200,7 @@ class WorkerFlowTests(unittest.TestCase):
              patch.object(worker, 'command', side_effect=self.command), \
              patch.object(worker, 'Path', return_value=receipt_path), \
              patch.object(worker.time, 'sleep'):
-            worker.run(self.store, self.rt, {'chart_version': '0.3.80', 'health_timeout_seconds': 5, **settings})
+            worker.run(self.store, self.rt, {'chart_version': '0.3.80', 'health_timeout_seconds': 5, **settings}, resume_merged=resume_merged)
 
     def assert_no_deploy(self):
         self.assertFalse(any(args[1] in {'upgrade', 'rollback'} for args in self.commands))
@@ -220,6 +223,76 @@ class WorkerFlowTests(unittest.TestCase):
         restore = max(index for index, (event, _) in enumerate(self.events) if event == 'suspend')
         self.assertEqual(len(terminal), 1)
         self.assertGreater(terminal[0], restore)
+
+    def test_scheduled_policy_skips_archive_and_keeps_deployment_guards(self):
+        self.run_worker(backup_mode='scheduled')
+        self.assertEqual(self.store.data['stage'], 'succeeded')
+        names = [event[0] for event in self.events]
+        self.assertNotIn('backup_create', names)
+        self.assertNotIn('backup_spec', names)
+        self.assertNotIn('backup_wait', names)
+        self.assertLess(names.index('preflight'), names.index('source_push'))
+        self.assertLess(names.index('source_push'), names.index('helm_upgrade'))
+        self.assertFalse(self.rt.cron['spec']['suspend'])
+        self.assertTrue(self.store.data['backup_schedule_restored'])
+        self.assertFalse(self.store.data['backup_create_attempted'])
+
+    def test_scheduled_policy_still_blocks_rejected_configuration(self):
+        self.rt.preflight_error = True
+        self.run_worker(backup_mode='scheduled')
+        self.assertEqual(self.store.data['stage'], 'failed')
+        self.assert_no_deploy()
+        self.source.push.assert_not_called()
+        self.assertFalse(self.rt.cron['spec']['suspend'])
+
+    def prepare_merge_resume(self):
+        self.store.data.update(backup_mode='scheduled', source_push_attempted=True,
+            source_push_status='pending', helm_upgrade_attempted=None,
+            backup_create_attempted=False, backup_schedule_restored=True,
+            preflight_job='ha-core-preflight-' + RUN_ID[:12],
+            approved_at=datetime.now(timezone.utc).isoformat(), proposal_sha=COMMIT,
+            previous_helm_revision='4', merge_wait_error='Core PR merge was not confirmed')
+        self.rt.job_record = {'spec': {'template': {'spec': {'containers': [{'image': TARGET}]}}},
+            'status': {'conditions': [{'type': 'Complete', 'status': 'True'}],
+                       'completionTime': datetime.now(timezone.utc).isoformat()}}
+        self.source.wait_merge.return_value = COMMIT
+
+    def test_confirmed_merge_resume_preserves_prior_preflight_and_deployment_checks(self):
+        self.prepare_merge_resume()
+        self.run_worker(backup_mode='scheduled', resume_merged=True)
+        self.assertEqual(self.store.data['stage'], 'succeeded')
+        self.source.wait_merge.assert_called_once()
+        self.source.push.assert_not_called()
+        self.assertNotIn('preflight', [e[0] for e in self.events])
+        self.assertNotIn('backup_create', [e[0] for e in self.events])
+        self.assertTrue(self.store.data['backup_schedule_restored'])
+
+    def test_merge_resume_refuses_failed_or_different_image_preflight(self):
+        for change in ('failed', 'image', 'old', 'stale', 'future'):
+            with self.subTest(change=change):
+                self.setUp()
+                self.prepare_merge_resume()
+                if change == 'failed':
+                    self.rt.job_record['status']['conditions'][0]['type'] = 'Failed'
+                elif change == 'image':
+                    self.rt.job_record['spec']['template']['spec']['containers'][0]['image'] = BASE
+                elif change == 'stale':
+                    self.store.data['approved_at'] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+                    self.rt.job_record['status']['completionTime'] = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+                elif change == 'future':
+                    self.rt.job_record['status']['completionTime'] = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+                else:
+                    self.rt.job_record['status']['completionTime'] = '2020-01-01T00:00:00+00:00'
+                self.run_worker(backup_mode='scheduled', resume_merged=True)
+                self.assertEqual(self.store.data['stage'], 'recovery_required')
+                self.assert_no_deploy()
+
+    def test_merge_resume_refuses_any_prior_deployment(self):
+        self.prepare_merge_resume()
+        self.store.data['helm_upgrade_attempted'] = True
+        self.run_worker(backup_mode='scheduled', resume_merged=True)
+        self.assertEqual(self.store.data['stage'], 'recovery_required')
+        self.assert_no_deploy()
 
     def test_configuration_policy_requires_exact_non_history_receipt(self):
         self.rt.receipt_extra = {'backup_mode': 'configuration',
@@ -284,7 +357,7 @@ class WorkerFlowTests(unittest.TestCase):
         self.run_worker(backup_mode='disabled')
         self.assertTrue(all(kind == 'persist' for kind, _ in self.events))
         self.assertEqual(self.store.data['stage'], 'failed')
-        self.assertEqual(self.store.data['last_error'], 'backup_mode must be full or configuration')
+        self.assertEqual(self.store.data['last_error'], 'backup_mode must be full, configuration or scheduled')
         self.assert_no_deploy()
 
     def test_guard_not_published_in_ha_prevents_all_mutations(self):

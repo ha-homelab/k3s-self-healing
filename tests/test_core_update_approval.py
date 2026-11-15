@@ -175,6 +175,7 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authentication_and_payload_rejections_start_nothing(self):
         self.assertEqual((await self.client.post('/approve',json=self.body)).status,403)
+        self.assertEqual((await self.client.post('/resume-merged',json={})).status,403)
         headers={'Authorization':'Bearer '+'a'*48}
         self.assertEqual((await self.client.post('/approve',json={},headers=headers)).status,422)
         self.assertEqual((await self.client.post('/approve',json=self.body|{'candidate_id':'0'*32},headers=headers)).status,409)
@@ -183,7 +184,8 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_ascii_authorization_is_forbidden_without_side_effects(self):
         original_state = self.store.path.read_bytes()
         routes = [('GET', '/status', None), ('POST', '/approve', self.body),
-                  ('POST', '/reoffer', self.body | {'action': 'reoffer'})]
+                  ('POST', '/reoffer', self.body | {'action': 'reoffer'}),
+                  ('POST', '/resume-merged', {})]
         for character in ('é', '☃'):
             for method, path, body in routes:
                 with self.subTest(character=character, path=path), patch.multiple(
@@ -199,6 +201,86 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(self.calls, [])
                     self.assertEqual(self.client.server.app[TASKS], set())
 
+    async def test_connectivity_failure_does_not_consume_approval(self):
+        from urllib.error import URLError
+        before = self.store.path.read_bytes()
+        self.runtime.maintenance_idle.side_effect = URLError('private connection detail')
+        response = await self.client.post('/approve', json=self.body,
+            headers={'Authorization': 'Bearer ' + 'a' * 48})
+        self.assertEqual(response.status, 503)
+        self.assertNotIn('private', await response.text())
+        self.assertEqual(self.store.path.read_bytes(), before)
+        self.assertEqual(self.calls, [])
+
+    async def test_resume_rejects_unapproved_state_without_side_effects(self):
+        before = self.store.path.read_bytes()
+        response = await self.client.post('/resume-merged', json={k: self.body[k]
+            for k in ('candidate_id', 'target_version')},
+            headers={'Authorization': 'Bearer ' + 'a' * 48})
+        self.assertEqual(response.status, 409)
+        self.assertEqual(self.store.path.read_bytes(), before)
+        self.assertEqual(self.calls, [])
+
+    def prepare_merge_resume(self):
+        self.store.approve(self.body)
+        fields = dict(stage='recovery_required', backup_mode='scheduled',
+            source_push_attempted=True, source_push_status='pending',
+            helm_upgrade_attempted=None, backup_create_attempted=False,
+            backup_schedule_was_suspended=False, backup_schedule_restored=True,
+            preflight_job='ha-core-preflight-' + self.body['candidate_id'][:12],
+            approved_at=self.store.read()['approved_at'], proposal_sha='b' * 40,
+            previous_helm_revision='4', last_error='Core PR merge was not confirmed',
+            merge_wait_error=None)
+        self.store.update(**fields)
+        return fields
+
+    async def resume_client(self, calls):
+        await self.client.close()
+        def accepted(*args, **kwargs):
+            calls.append((args, kwargs))
+        self.client = TestClient(TestServer(create_app(self.store, self.runtime,
+            {'backup_mode': 'scheduled'}, 'a' * 48, worker=accepted)))
+        await self.client.start_server()
+
+    async def test_exact_merge_resume_is_accepted_once_and_preserves_approval(self):
+        fields = self.prepare_merge_resume()
+        calls = []
+        await self.resume_client(calls)
+        body = {key: self.body[key] for key in ('candidate_id', 'target_version')}
+        headers = {'Authorization': 'Bearer ' + 'a' * 48}
+        responses = await asyncio.gather(*[
+            self.client.post('/resume-merged', json=body, headers=headers) for _ in range(2)])
+        self.assertEqual(sorted(response.status for response in responses), [202, 409])
+        await asyncio.gather(*list(self.client.server.app[TASKS]))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], {'resume_merged': True})
+        self.assertIs(calls[0][0][0], self.store)
+        self.assertIs(calls[0][0][1], self.runtime)
+        current = self.store.read()
+        self.assertEqual(current['stage'], 'preparing')
+        self.assertEqual(current['approved_at'], fields['approved_at'])
+        self.assertEqual(current['proposal_sha'], fields['proposal_sha'])
+        self.assertEqual(current['merge_wait_error'], fields['last_error'])
+        self.assertEqual(current['last_error'], '')
+
+    async def test_unknown_backup_or_deployment_history_cannot_resume(self):
+        fields = self.prepare_merge_resume()
+        calls = []
+        await self.resume_client(calls)
+        body = {key: self.body[key] for key in ('candidate_id', 'target_version')}
+        for change in ({'backup_create_attempted': None},
+                       {'helm_upgrade_attempted': False},
+                       {'backup_schedule_restored': False}):
+            with self.subTest(change=change):
+                self.store.update(**(fields | change))
+                before = self.store.path.read_bytes()
+                response = await self.client.post('/resume-merged', json=body,
+                    headers={'Authorization': 'Bearer ' + 'a' * 48})
+                self.assertEqual(response.status, 409)
+                self.assertEqual(self.store.path.read_bytes(), before)
+                self.assertEqual(calls, [])
+                self.assertEqual(self.client.server.app[TASKS], set())
+
     async def test_exact_approval_returns_202_and_second_returns_409(self):
         headers={'Authorization':'Bearer '+'a'*48}
         self.assertEqual((await self.client.post('/approve',json=self.body,headers=headers)).status,202)
@@ -211,7 +293,7 @@ class HttpTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.maintenance_idle.side_effect = RuntimeError('Private busy detail')
         response = await self.client.post('/approve', json=self.body,
             headers={'Authorization': 'Bearer ' + 'a' * 48})
-        self.assertEqual(response.status, 409)
+        self.assertEqual(response.status, 423)
         self.assertNotIn('Private', await response.text())
         self.assertEqual(self.store.read()['stage'], 'available')
         self.assertEqual(self.calls, [])

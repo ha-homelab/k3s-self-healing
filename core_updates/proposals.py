@@ -201,7 +201,7 @@ def propose(api):
         api.api('git/refs', {'ref': 'refs/heads/' + branch, 'sha': head})
     pr = existing or api.api('pulls', {'title': 'Update Home Assistant Core to ' + version, 'head': branch, 'base': 'main',
         'body': 'Automated stable Core proposal. Both runtime image pins use the same immutable registry digest.\n\n'
-                'Home Assistant Install authorizes a fresh configuration backup and candidate preflight before '
+                'Home Assistant Install authorizes the configured backup policy and candidate preflight before '
                 'requesting this PR merge. Merging this PR alone does not deploy or restart Home Assistant.\n\n'
                 '[Upstream release notes](' + release_url + ')'})
     data['pull_request'] = pr['number']

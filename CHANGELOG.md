@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.2] - 2026-11-14
+
+### Added
+
+- Explicit scheduled-backup policy for Core updates, preserving full backup as
+  the default. Require fresh exact target preflight and guarded source identity
+  before deployment, including authenticated recovery from a confirmed merge
+  timeout when no backup or deployment outcome is unknown.
+- Optional Kine MySQL capture source, its managed-profile recovery integration,
+  strict supported dump grammar, encrypted-output proof and software fixtures.
+  Public source validation and Go analysis include the new module.
+
+### Fixed
+
+- Reject future-dated target preflight completion during merge recovery and
+  retain approval identity across maintenance/connectivity refusals.
+- Reject dangling managed datastore paths, ambiguous or oversized capture
+  receipts, and file/directory replacement while accepting an encrypted capture.
+  Keep capture descriptor/name custody through component creation before adding
+  accepted snapshot metadata.
+
+### Upgrade
+
+The example profile retains its existing defaults. Scheduled backups and MySQL
+capture require explicit operator policy and installation-specific qualification.
+The source archive contains no client binary, credentials or deployment receipt;
+software fixtures do not establish backup installation or restore acceptance.
+See `docs/core-update-proposals.md` and
+`disaster_recovery/mysql_backup/README.md` before adoption.
+
 ## [0.2.1] - 2026-11-11
 
 ### Fixed

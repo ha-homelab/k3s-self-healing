@@ -361,6 +361,17 @@ class ConfigurationReportTest(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, "integration configuration"):
                 preflight.validate_config_report(self.report(warnings={"example": [message]}), 0)
 
+    def test_failure_diagnostics_do_not_publish_configuration_values(self):
+        import contextlib
+        import io
+        stream = io.StringIO()
+        message = "Invalid config for 'example' at configuration.yaml: private-token-value"
+        with contextlib.redirect_stdout(stream), self.assertRaises(RuntimeError):
+            preflight.validate_config_report(self.report(warnings={'private-key': [message]}))
+        record = json.loads(stream.getvalue())
+        self.assertEqual(record['component'], 'example')
+        self.assertNotIn('private', stream.getvalue())
+
     def test_schema_error_or_failed_process_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "validation failed"):
             preflight.validate_config_report(self.report(errors={"example": ["invalid"]}), 0)

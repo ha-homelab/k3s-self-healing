@@ -7,6 +7,7 @@ import shutil
 import time
 import subprocess
 import sys
+import re
 
 
 ROOT_EXCLUDED = {"backups", "recorder_backup", "tmp_backups", ".git", "__pycache__", "media", "tts"}
@@ -283,6 +284,13 @@ def validate_config_report(report, returncode=0):
             if isinstance(message, str) and message.startswith("Setup of package '") and " failed:" in message:
                 raise RuntimeError("Home Assistant package merge validation failed")
             if isinstance(message, str) and message.startswith(("Integration error:", "Component error:", "Platform error '", "Invalid config for '")):
+                # Emit identifiers only: reports can include resolved secrets.
+                patterns = (r"Integration error: ([a-z0-9_]+)", r"Component error: ([a-z0-9_]+)",
+                            r"Platform error '([a-z0-9_.]+)'", r"Invalid config for '([a-z0-9_]+)'")
+                component = next((match.group(1) for pattern in patterns
+                                  if (match := re.match(pattern, message))), "unknown")
+                print(json.dumps({"preflight_stage": "integration_validation_failed",
+                                  "component": component}), flush=True)
                 raise RuntimeError("Home Assistant integration configuration validation failed")
     warnings = report.get("total_warnings")
     if not isinstance(warnings, int) or isinstance(warnings, bool) or warnings < 0:

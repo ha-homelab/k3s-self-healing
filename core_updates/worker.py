@@ -207,7 +207,22 @@ def helm_env(rt):
                 HELM_CONFIG_HOME="/state/helm/config", HELM_DATA_HOME="/state/helm/data")
 
 
-def run(store, rt, settings):
+def validate_merge_resume(approval, mode):
+    """Only continue a timed-out merge; never repeat deployment or an unknown backup."""
+    if (mode != 'scheduled' or approval.get('backup_mode') != 'scheduled'
+            or approval.get('source_push_attempted') is not True
+            or approval.get('source_push_status') != 'pending'
+            or approval.get('helm_upgrade_attempted') is not None
+            or approval.get('backup_create_attempted') is not False
+            or approval.get('backup_schedule_restored') is not True
+            or approval.get('preflight_job') != 'ha-core-preflight-' + approval.get('candidate_id', '')[:12]
+            or not approval.get('approved_at')
+            or not approval.get('proposal_sha')
+            or not (approval.get('last_error', '') or approval.get('merge_wait_error', '')).startswith('Core PR merge was not confirmed')):
+        raise RuntimeError('This attempt cannot resume a confirmed merge')
+
+
+def run(store, rt, settings, resume_merged=False):
     approval = store.read()
     identity = approval["candidate_id"][:12]
     source = Source(settings)
@@ -218,12 +233,14 @@ def run(store, rt, settings):
     backup_create_attempted = False
     backup_terminal = False
     backup_job_uid = None
-    source_push_attempted = False
+    source_push_attempted = bool(resume_merged)
     helm_started = False
     backup_image_verified = False
     outcome = {"stage": "failed", "last_error": "Update did not complete"}
     try:
         mode = backup_mode(settings)
+        if resume_merged:
+            validate_merge_resume(approval, mode)
         store.update(backup_mode=mode)
         image_tag(approval["image"])
         rt.wait_update_visible(approval["candidate_id"])
@@ -241,6 +258,8 @@ def run(store, rt, settings):
         if not history or history[-1]["status"] != "deployed" or history[-1]["chart"] != "home-assistant-" + settings["chart_version"]:
             raise RuntimeError("Helm release is busy or the chart changed")
         old_revision = str(history[-1]["revision"])
+        if resume_merged and old_revision != str(approval.get('previous_helm_revision')):
+            raise RuntimeError('Helm revision changed after preflight')
 
         cron = rt.get("cronjobs", "ha-recorder-native-backup")
         old_cron = cron["spec"].get("suspend", False)
@@ -248,80 +267,97 @@ def run(store, rt, settings):
             raise RuntimeError("Unexpected backup schedule suspension value")
         # Journal the original schedule and exact job name BEFORE changing the
         # CronJob. A crash must never lose the information required to recover.
-        store.update(stage="backup", backup_schedule_was_suspended=old_cron,
+        store.update(stage="preparing" if mode == "scheduled" else "backup", backup_schedule_was_suspended=old_cron,
                      backup_job=backup_job, backup_create_attempted=False,
                      backup_schedule_restored=False, previous_helm_revision=old_revision)
         schedule_suspend_attempted = True
         rt.request(rt.path("cronjobs", "ha-recorder-native-backup"), "PATCH",
                    {"spec": {"suspend": True}, "metadata": {"resourceVersion": cron["metadata"]["resourceVersion"]}})
         rt.maintenance_idle()
-        backup_spec = rt.backup_spec(approval["candidate_id"])
-        backup_start = datetime.now(timezone.utc)
-        store.update(backup_create_attempted=True, backup_started_at=backup_start.isoformat())
-        backup_create_attempted = True
-        created = rt.job(backup_job, backup_spec)
-        backup_job_uid = created["metadata"]["uid"]
-        store.update(backup_job_uid=backup_job_uid)
-        try:
-            finished = rt.wait_job(backup_job, 7500)
-        except Exception:
-            diagnostic = rt.backup_failure(backup_job, backup_job_uid, approval["candidate_id"], backup_start)
-            if diagnostic:
-                raise BackupCapacityError(diagnostic) from None
-            raise
-        if finished.get("metadata", {}).get("uid") != backup_job_uid or terminal_job_state(finished) != "complete":
-            raise RuntimeError("Backup completion is not confirmed")
-        backup_terminal = True
-        store.update(backup_job_terminal="complete")
-        receipt = json.loads(Path("/ha-config/backups/recorder-native-receipt.json").read_text())
-        if receipt.get("backup_mode", "full") != mode:
-            raise RuntimeError("Native backup receipt does not match the selected backup policy")
-        if mode == "configuration" and (receipt.get("recorder_history_included") is not False
-                or receipt.get("recorder") is not None or receipt.get("update_job_uid") != backup_job_uid):
-            raise RuntimeError("Configuration-only backup receipt is incomplete or belongs to another Job")
-        if receipt.get("update_run_id") != approval["candidate_id"]:
-            raise RuntimeError("Native backup receipt belongs to a different update run")
-        date = datetime.fromisoformat(receipt["date"].replace("Z", "+00:00"))
-        if not receipt.get("backup_id") or date.tzinfo is None or date < backup_start:
-            raise RuntimeError("A fresh exact native backup receipt was not found")
-        if not receipt.get("agents"):
-            raise RuntimeError("No confirmed backup destination")
-        approval = store.update(backup_id=receipt["backup_id"])
+        if mode != "scheduled" and not resume_merged:
+            backup_spec = rt.backup_spec(approval["candidate_id"])
+            backup_start = datetime.now(timezone.utc)
+            store.update(backup_create_attempted=True, backup_started_at=backup_start.isoformat())
+            backup_create_attempted = True
+            created = rt.job(backup_job, backup_spec)
+            backup_job_uid = created["metadata"]["uid"]
+            store.update(backup_job_uid=backup_job_uid)
+            try:
+                finished = rt.wait_job(backup_job, 7500)
+            except Exception:
+                diagnostic = rt.backup_failure(backup_job, backup_job_uid, approval["candidate_id"], backup_start)
+                if diagnostic:
+                    raise BackupCapacityError(diagnostic) from None
+                raise
+            if finished.get("metadata", {}).get("uid") != backup_job_uid or terminal_job_state(finished) != "complete":
+                raise RuntimeError("Backup completion is not confirmed")
+            backup_terminal = True
+            store.update(backup_job_terminal="complete")
+            receipt = json.loads(Path("/ha-config/backups/recorder-native-receipt.json").read_text())
+            if receipt.get("backup_mode", "full") != mode:
+                raise RuntimeError("Native backup receipt does not match the selected backup policy")
+            if mode == "configuration" and (receipt.get("recorder_history_included") is not False
+                    or receipt.get("recorder") is not None or receipt.get("update_job_uid") != backup_job_uid):
+                raise RuntimeError("Configuration-only backup receipt is incomplete or belongs to another Job")
+            if receipt.get("update_run_id") != approval["candidate_id"]:
+                raise RuntimeError("Native backup receipt belongs to a different update run")
+            date = datetime.fromisoformat(receipt["date"].replace("Z", "+00:00"))
+            if not receipt.get("backup_id") or date.tzinfo is None or date < backup_start:
+                raise RuntimeError("A fresh exact native backup receipt was not found")
+            if not receipt.get("agents"):
+                raise RuntimeError("No confirmed backup destination")
+            approval = store.update(backup_id=receipt["backup_id"])
 
-        # A native export can take tens of minutes. Validate the target against
-        # a NEW configuration copy after that backup, not an earlier snapshot.
-        rt.maintenance_idle()
-        rt.healthy(approval["installed_version"])
-        if rt.image() != approval["base_image"]:
-            raise RuntimeError("Deployment changed while backup was running")
-        store.update(stage="preflight", preflight_job=preflight_job)
-        rt.preflight(preflight_job, approval["image"])
-        rt.maintenance_idle()
-        rt.healthy(approval["installed_version"])
-        if rt.image() != approval["base_image"]:
-            raise RuntimeError("Deployment changed during target preflight")
+        if resume_merged:
+            finished = rt.get('jobs', approval['preflight_job'])
+            completed = datetime.fromisoformat(finished.get('status', {}).get('completionTime', '').replace('Z', '+00:00'))
+            approved = datetime.fromisoformat(approval['approved_at'])
+            if (finished.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [{}])[0].get('image') != approval['image']
+                    or terminal_job_state(finished) != 'complete' or completed.tzinfo is None
+                    or completed < approved or not 0 <= (datetime.now(timezone.utc) - completed).total_seconds() <= 3600):
+                raise RuntimeError('A recent completed exact preflight is required')
+            source_commit = source.wait_merge(approval, timeout=30)
+            source_push_attempted = True
+            store.update(source_commit=source_commit, source_push_status='confirmed')
+            rt.maintenance_idle()
+            rt.healthy(approval['installed_version'])
+            if rt.image() != approval['base_image']:
+                raise RuntimeError('Deployment changed after preflight')
+        else:
+            # A native export can take tens of minutes. Validate the target against
+            # a NEW configuration copy after that backup, not an earlier snapshot.
+            rt.maintenance_idle()
+            rt.healthy(approval["installed_version"])
+            if rt.image() != approval["base_image"]:
+                raise RuntimeError("Deployment changed while backup was running")
+            store.update(stage="preflight", preflight_job=preflight_job)
+            rt.preflight(preflight_job, approval["image"])
+            rt.maintenance_idle()
+            rt.healthy(approval["installed_version"])
+            if rt.image() != approval["base_image"]:
+                raise RuntimeError("Deployment changed during target preflight")
 
-        # Refresh immediately before committing; never override another writer.
-        source_base = source.prepare()
-        store.update(source_mutation_intent={"base_commit": source_base,
-                     "image": approval["image"], "candidate_id": approval["candidate_id"]})
-        if settings.get('proposal_workflow'):
-            request_tag = 'ha-core-install/' + secrets.token_hex(16)
-            source_commit = approval['proposal_sha']
-            store.update(merge_request_tag=request_tag)
-        else:
-            source_commit = source.pin(approval["image"], approval)
-        # A push may succeed remotely and then time out locally. Persist its
-        # exact intent before starting it and require recovery on ANY exception.
-        store.update(source_commit=source_commit, source_push_attempted=True,
-                     source_push_status="pending")
-        source_push_attempted = True
-        if settings.get('proposal_workflow'):
-            source.request_merge(approval, request_tag)
-            source_commit = source.wait_merge(approval)
-        else:
-            source.push(source_commit)
-        store.update(source_push_status="confirmed", source_commit=source_commit)
+            # Refresh immediately before committing; never override another writer.
+            source_base = source.prepare()
+            store.update(source_mutation_intent={"base_commit": source_base,
+                         "image": approval["image"], "candidate_id": approval["candidate_id"]})
+            if settings.get('proposal_workflow'):
+                request_tag = 'ha-core-install/' + secrets.token_hex(16)
+                source_commit = approval['proposal_sha']
+                store.update(merge_request_tag=request_tag)
+            else:
+                source_commit = source.pin(approval["image"], approval)
+            # A push may succeed remotely and then time out locally. Persist its
+            # exact intent before starting it and require recovery on ANY exception.
+            store.update(source_commit=source_commit, source_push_attempted=True,
+                         source_push_status="pending")
+            source_push_attempted = True
+            if settings.get('proposal_workflow'):
+                source.request_merge(approval, request_tag)
+                source_commit = source.wait_merge(approval)
+            else:
+                source.push(source_commit)
+            store.update(source_push_status="confirmed", source_commit=source_commit)
 
         # Journal before invoking Helm. A timeout is not proof that HA never
         # started or migrated data; neither Helm rollback nor a source revert

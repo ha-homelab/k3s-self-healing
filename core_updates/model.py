@@ -15,7 +15,7 @@ ACTIVE = {"preparing", "preflight", "backup", "deploying", "verifying"}
 VERSION = re.compile(r"(20\d{2})\.([1-9]|1[0-2])\.(0|[1-9]\d*)(?:b([1-9]\d*))?\Z")
 IMAGE = re.compile(r"ghcr\.io/home-assistant/home-assistant:([\d.]+(?:b[1-9]\d*)?)@sha256:[a-f0-9]{64}\Z")
 RUN_FIELDS = (
-    "source_mutation_intent", "source_commit", "source_push_attempted", "source_push_status",
+    "merge_wait_error", "source_mutation_intent", "source_commit", "source_push_attempted", "source_push_status",
     "helm_upgrade_attempted", "backup_job_uid", "backup_create_attempted", "backup_started_at",
     "backup_job_terminal", "backup_schedule_was_suspended", "backup_schedule_restored",
     "backup_image_verified", "previous_helm_revision", "backup_job", "preflight_job", "backup_failure", "backup_mode", "merge_request_tag")

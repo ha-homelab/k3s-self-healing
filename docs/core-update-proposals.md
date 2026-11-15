@@ -84,6 +84,25 @@ has changed. Review and release a compatible profile instead of bypassing that
 check. Configuration-only backup remains an explicit site policy, independent
 of proposal mode; the default sample still includes history.
 
+An explicit `backup_mode: scheduled` policy can use an independently qualified
+backup schedule instead of creating another archive for every Core update. Full
+backup remains the default. This policy still requires the maintenance guard,
+exact target preflight, stable deployment and source/image checks; it does not
+establish that an external backup schedule is healthy. Qualify that schedule and
+its recovery procedure before enabling the policy.
+
+After merge confirmation times out, a new authenticated request may resume only
+the recorded scheduled-policy attempt with known no-backup history, no started
+deployment, unchanged approval/proposal identity and unchanged Helm revision.
+The completed exact target preflight must be after approval and between zero
+and 3600 seconds old; a future timestamp is refused. The worker confirms the
+approved source merge and pins again before deployment. Unknown backup outcomes
+or a prior deployment attempt remain recovery-required and cannot use this path.
+
+Maintenance and connectivity refusals preserve the unconsumed approval. The API
+returns 423 for an active maintenance guard or 503 for unavailable guard status,
+using fixed public classifications rather than operator diagnostics.
+
 ## Verification scope
 
 Tests cover proposal idempotency, partial creation, closed PRs, exact changes,

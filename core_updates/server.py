@@ -95,13 +95,25 @@ def create_app(store, runtime, settings, token, worker=run):
             raise web.HTTPForbidden()
         try:
             body = await request.json()
-            await asyncio.to_thread(runtime.maintenance_idle)
+            try:
+                await asyncio.to_thread(runtime.maintenance_idle)
+                with store.lock:
+                    if guard := app.get('recorder_budget_guard'):
+                        guard.assert_update_idle()
+            except RuntimeError:
+                return web.json_response({"error": "Recorder or HACS maintenance is pending; wait for completion and retry"}, status=423)
             with store.lock:
-                if guard := app.get('recorder_budget_guard'):
-                    guard.assert_update_idle()
+                # Recheck under the approval lock to fence a newly queued purge.
+                try:
+                    if guard := app.get('recorder_budget_guard'):
+                        guard.assert_update_idle()
+                except RuntimeError:
+                    return web.json_response({"error": "Recorder maintenance is pending; retry after completion"}, status=423)
                 accepted = store.approve(body)
         except (ValueError, TypeError, json.JSONDecodeError):
             return web.json_response({"error": "Invalid approval request"}, status=422)
+        except OSError:
+            return web.json_response({"error": "Home Assistant connectivity check failed; retry when connectivity is restored"}, status=503)
         except RuntimeError:
             return web.json_response({"error": "Approval expired, changed or already used"}, status=409)
         task = asyncio.create_task(asyncio.to_thread(worker, store, runtime, settings))
@@ -130,6 +142,31 @@ def create_app(store, runtime, settings, token, worker=run):
         return web.json_response({"offered": True, "candidate_id": offered["candidate_id"],
                                   "target_version": offered["target_version"]}, status=200)
 
+    async def resume_merged(request):
+        if not authorized(request):
+            raise web.HTTPForbidden()
+        from worker import validate_merge_resume
+        from runtime import backup_mode
+        try:
+            body = await request.json()
+            with store.lock:
+                current = store.read()
+                if (not isinstance(body, dict) or set(body) != {'candidate_id', 'target_version'}
+                        or any(body[k] != current.get(k) for k in body)
+                        or current['stage'] != 'recovery_required'):
+                    raise RuntimeError('Recovery identity changed')
+                validate_merge_resume(current, backup_mode(settings))
+                if guard := app.get('recorder_budget_guard'):
+                    guard.assert_update_idle()
+                store.update(stage='preparing', merge_wait_error=current['last_error'], last_error='')
+        except (ValueError, RuntimeError, TypeError):
+            return web.json_response({'error': 'Confirmed merge recovery is unavailable'}, status=409)
+        task = asyncio.create_task(asyncio.to_thread(worker, store, runtime, settings, resume_merged=True))
+        app[TASKS].add(task)
+        task.add_done_callback(app[TASKS].discard)
+        return web.json_response({'accepted': True, 'candidate_id': current['candidate_id']}, status=202)
+
+    app.router.add_post('/resume-merged', resume_merged)
     app.router.add_get("/healthz", health)
     app.router.add_get("/status", status)
     app.router.add_post("/approve", approve)
