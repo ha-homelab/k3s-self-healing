@@ -25,6 +25,20 @@ jobs:
     - run: pip install -r requirements-validation.txt
     - run: python tools/validate.py --lint
     - run: python -m unittest discover -s tests
+    - name: Set up the MySQL capture source toolchain
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      with:
+        go-version: '1.27.4'
+        cache-dependency-path: disaster_recovery/mysql_backup/go.sum
+    - name: Test the MySQL capture software fixtures
+      working-directory: disaster_recovery/mysql_backup
+      env:
+        GOENV: 'off'
+        GOAUTH: 'off'
+        GOTOOLCHAIN: local
+        GOPROXY: https://proxy.golang.org
+        GOSUMDB: sum.golang.org
+      run: go test -mod=readonly -count=1 -timeout=120s ./...
     - name: Verify repeatable source archives
       run: |
         python tools/package_release.py "$RUNNER_TEMP/source-first.tar.gz"

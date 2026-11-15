@@ -1,5 +1,11 @@
 # Backup and recovery
 
+The optional [Kine MySQL capture source](../disaster_recovery/mysql_backup/README.md)
+supports one explicitly managed endpoint layout. It is disabled in the public
+example profile and needs separately qualified client/schema/TLS/restore and
+installation-specific mounts. It must not be used as general external-backend
+detection or presented as proof that a database or installed backup was tested.
+
 ## Recovery sets
 
 The NAS recovery worker verifies a dedicated bound PVC/PV with `Retain`, checks

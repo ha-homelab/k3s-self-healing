@@ -17,6 +17,7 @@ import traceback
 
 from .archive import create_archive, SourceChangedError, validate_staged_capture, validate_wal_snapshot
 from .kubernetes import Kubernetes
+from .mysql_capture import prepare_capture, verified_capture, SQLITE_EXCLUDES
 from .local_capture import validate_local_capture, validate_sqlite_validation_mirror
 
 PROFILE = 'ha-homelab-dr-v1'
@@ -208,6 +209,8 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                                              local_capture=item.get('local_capture'))
             validate_wal_snapshot(item.get('wal_snapshot'))
 
+    mysql_capture = prepare_capture(config, host)
+
     os.umask(0o077)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if root.is_symlink():
@@ -235,6 +238,17 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
         write_json(root / 'latest-attempt.json', {'state': 'running', 'snapshot': name, 'started_at': timestamp()})
         try:
             print('Starting private recovery snapshot', flush=True)
+            if mysql_capture is not None:
+                with verified_capture(config['k3s_mysql_capture']) as consumed_capture:
+                    if consumed_capture != mysql_capture:
+                        raise ValueError('K3s MySQL capture changed before component creation')
+                    component = archive_component(
+                        Path(config['k3s_mysql_capture']), work, 'k3s-mysql',
+                        {'type': 'mysql-kine', 'encrypted': True, 'capture': consumed_capture})
+                # Final descriptor/name checks must pass before this component
+                # becomes accepted snapshot metadata.
+                manifest['components'].append(component)
+                print('Captured encrypted K3s MySQL state', flush=True)
             state_root = work / '.kubernetes'
             collections = export_kubernetes(api, state_root, config)
             pods = api.list('/api/v1/pods')['items']
@@ -282,8 +296,11 @@ def run(config, root, *, host=Path('/host'), nfs=Path('/nfs-source'), api=None):
                 if item.get('optional') and not source.exists():
                     manifest['metadata']['optional_sources_absent'].append(item['path'])
                     continue
+                excludes = list(item.get('exclude', []))
+                if mysql_capture is not None and item['path'] == '/var/lib/rancher/k3s/server':
+                    excludes.extend(SQLITE_EXCLUDES)
                 manifest['components'].append(archive_component(source, work, item['name'],
-                    {'type': 'host', 'node': config['node'], 'path': item['path']}, item.get('exclude', []),
+                    {'type': 'host', 'node': config['node'], 'path': item['path']}, excludes,
                     archive_timeout_seconds=item.get('archive_timeout_seconds', DEFAULT_ARCHIVE_TIMEOUT_SECONDS),
                     staged_capture=item.get('staged_capture', False),
                     **({'local_capture': item['local_capture']} if item.get('local_capture') is not None else {}),

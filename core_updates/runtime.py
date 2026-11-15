@@ -120,8 +120,8 @@ def backup_containers(pod):
 
 def backup_mode(settings):
     mode = settings.get("backup_mode", "full")
-    if mode not in ("full", "configuration"):
-        raise ValueError("backup_mode must be full or configuration")
+    if mode not in ("full", "configuration", "scheduled"):
+        raise ValueError("backup_mode must be full, configuration or scheduled")
     return mode
 
 
@@ -383,6 +383,7 @@ class Runtime:
         sts = self.get("statefulsets", "home-assistant")
         live = sts["spec"]["template"]["spec"]
         pod = {"restartPolicy": "Never", "automountServiceAccountToken": False,
+               "dnsConfig": {"options": [{"name": "ndots", "value": "1"}]},
             "nodeSelector": deepcopy(live.get("nodeSelector", {})),
             "securityContext": {"runAsUser": 0, "runAsGroup": 0,
                                 "seccompProfile": {"type": "RuntimeDefault"}},
