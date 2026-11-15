@@ -33,6 +33,7 @@ def require_capture_checks(validation, codeql):
     setups = [s for s in analyze['steps'] if s.get('uses') == GO_ACTION]
     assert len(setups) == 1 and setups[0]['if'] == "matrix.language == 'go'"
     assert setups[0]['with']['go-version'] == '1.27.4'
+    assert analyze['steps'].index(setups[0]) < analyze['steps'].index(initializers[0])
     builds = [s for s in analyze['steps'] if s.get('run', '').startswith('go build ')]
     assert len(builds) == 1 and builds[0]['if'] == "matrix.language == 'go'"
     assert builds[0]['working-directory'] == MODULE
@@ -84,6 +85,16 @@ class MySQLSourceContractTests(unittest.TestCase):
                 build['env'].pop('CODEQL_EXTRACTOR_GO_BUILD_TRACING')
             with self.subTest(mutation=mutation), self.assertRaises(AssertionError):
                 require_capture_checks(self.validation, codeql)
+
+    def test_installing_go_after_init_cannot_replace_the_tracing_shim(self):
+        codeql = copy.deepcopy(self.codeql)
+        steps = codeql['jobs']['analyze']['steps']
+        setup = next(s for s in steps if s.get('uses') == GO_ACTION)
+        initializer = next(s for s in steps if s.get('uses', '').startswith('github/codeql-action/init@'))
+        steps.remove(setup)
+        steps.insert(steps.index(initializer) + 1, setup)
+        with self.assertRaises(AssertionError):
+            require_capture_checks(self.validation, codeql)
 
     def test_exact_capture_source_set_is_in_the_publication_inventory(self):
         files = json.loads((ROOT / 'publication.json').read_text())['files']

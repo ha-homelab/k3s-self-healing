@@ -30,6 +30,17 @@ software fixtures do not establish backup installation or restore acceptance.
 See `docs/core-update-proposals.md` and
 `disaster_recovery/mysql_backup/README.md` before adoption.
 
+### Security
+
+Datastore credentials stay in a mode-0600 client options file; SQL is streamed
+through gzip and age without creating a plaintext dump file. Keep two distinct
+recovery recipients configured and store their keys separately from captures.
+The verifier rejects ambiguous receipts and changed file or parent-directory
+versions while the capture archive is created. Keep that capture mount stable
+during backup acceptance. Passing source tests does not establish an installed
+capture job or a successful restore. Qualify the documented TLS/client profile
+and recovery procedure before enabling this optional capture.
+
 ## [0.2.1] - 2026-11-11
 
 ### Fixed
