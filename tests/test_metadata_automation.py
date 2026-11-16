@@ -6,7 +6,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 # renovate: toolkit-reference
-TOOLKIT_REF = "d42735efe245c1fa7ceba945a34b77d9d6b8176b"
+TOOLKIT_REF = "486d9b959599bed009f9fdafb55f0820070ce860"
 
 
 class MetadataAutomationTests(unittest.TestCase):
