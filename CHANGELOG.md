@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.3] - Unreleased
+
+### Maintenance
+
+- Update the SQLAlchemy source-validation dependency to 2.1.9.
+
+### Upgrade
+
+Update source-validation environments to install the reviewed SQLAlchemy 2.1.9
+dependency before running the validation suite. Existing deployment settings and
+independently versioned Helm chart and Home Assistant pins are unchanged; this
+source release does not perform a deployment or establish hardware acceptance.
+
+### Security
+
+The dependency update affects source validation. It does not grant new access or
+change credential handling. Keep installation-specific credentials outside the
+source archive and retain the existing validation and release provenance checks.
+
 ## [0.2.2] - 2026-11-14
 
 ### Added
