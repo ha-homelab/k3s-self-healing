@@ -33,6 +33,8 @@ use the checked-in files without fetching a separate configuration repository.
 - Offline fault-injection tests, HA runtime tests, source privacy checks, and
   deterministic source packaging.
 
+Docs index: [docs/README.md](docs/README.md).
+
 Kubernetes restarts failed Pods. Recovery from a lost node or damaged persistent
 storage is an operator procedure; one replica with local-path storage is not an
 automatically failing-over HA cluster. Do not run two Home Assistant instances
