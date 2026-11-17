@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.3] - Unreleased
+
+### Maintenance
+
+- Update the SQLAlchemy source-validation dependency to 2.1.9.
+
 ## [0.2.2] - 2026-11-14
 
 ### Added
