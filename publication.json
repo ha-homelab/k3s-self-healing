@@ -88,6 +88,7 @@
     "disaster_recovery/restore.py",
     "disaster_recovery/runner.py",
     "docs/QUALITY.md",
+    "docs/README.md",
     "docs/REVIEW_AUTOMATION.md",
     "docs/VERSIONING.md",
     "docs/core-update-proposals.md",
