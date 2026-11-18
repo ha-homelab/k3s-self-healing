@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.4] - Unreleased
 
 ### Fixed
 
@@ -10,7 +10,7 @@
 
 ### Upgrade
 
-Consume the next reviewed source release and reinstall the native-backup code
+Consume source release 0.2.4 and reinstall the native-backup code
 through the existing installer during an exclusive maintenance window. This
 source change does not deploy itself, change schedules or request a backup.
 
