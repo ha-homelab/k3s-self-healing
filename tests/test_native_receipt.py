@@ -3,6 +3,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import socket
 from pathlib import Path
 import sys
 import tempfile
@@ -18,6 +19,15 @@ spec.loader.exec_module(runner)
 AGENT = 'synology_dsm.fixture'
 
 
+class ConnectorError(Exception):
+    def __init__(self, os_error):
+        self.os_error = os_error
+
+
+class ClientSSLError(ConnectorError):
+    pass
+
+
 class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -31,6 +41,9 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
         self.calls, self.receive_timeouts = [], []
         self.requests = []
         self.hook = None
+        self.connection_errors = []
+        self.connect_calls = 0
+        self.auth_response = 'auth_ok'
 
     def backup(self, identifier, newer=False, failed=False, agents=None):
         return {'backup_id': identifier, 'date': '2026-09-29T05:00:0' + ('2' if newer else '1') + '+00:00',
@@ -55,7 +68,7 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
                 fixture.receive_timeouts.append(kwargs.get('timeout'))
                 if self.last is None:return {'type': 'auth_required'}
                 kind = self.last['type']
-                if kind == 'auth':return {'type': 'auth_ok'}
+                if kind == 'auth':return {'type': fixture.auth_response}
                 if fixture.hook:
                     reply = await fixture.hook(kind, self.generated)
                     if reply is not None:return reply
@@ -74,10 +87,15 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self, **kwargs):pass
             async def __aenter__(self):return self
             async def __aexit__(self, *args):pass
-            def ws_connect(self, _):return Socket()
+            def ws_connect(self, _):
+                fixture.connect_calls += 1
+                if fixture.connection_errors:
+                    raise fixture.connection_errors.pop(0)
+                return Socket()
 
-        aiohttp = types.SimpleNamespace(TraceConfig=lambda: types.SimpleNamespace(on_request_redirect=[]), ClientSession=Session, ClientTimeout=lambda **kwargs: None)
-        limits = {'POLL_INTERVAL_SECONDS': 0.001, **settings}
+        aiohttp = types.SimpleNamespace(TraceConfig=lambda: types.SimpleNamespace(on_request_redirect=[]), ClientSession=Session, ClientTimeout=lambda **kwargs: None,
+                                        ClientConnectorError=ConnectorError, ClientSSLError=ClientSSLError)
+        limits = {'POLL_INTERVAL_SECONDS': 0.001, 'CONNECT_RETRY_DELAYS': (0, 0), **settings}
         with patch.dict(sys.modules, {'aiohttp': aiohttp}), patch.dict(os.environ, {
                 'HA_TOKEN_FILE': str(self.token), 'HA_URL': 'http://offline.invalid'}), patch.multiple(
                 runner, CONFIG=self.root, OUTPUT=self.root / 'recorder_backup',
@@ -85,6 +103,38 @@ class NativeReceiptTest(unittest.IsolatedAsyncioTestCase):
                 runner, 'measure_config', return_value=0), patch.object(runner, 'check_native_capacity', return_value={}), patch.object(
                 runner, 'verify_runtime_contract', return_value={'homeassistant_version': '2026.9.1'}):
             await runner.native_backup(configuration_only=configuration_only)
+
+    async def test_initial_dns_failure_recovers_and_generates_only_once(self):
+        self.connection_errors = [ConnectorError(socket.gaierror(socket.EAI_AGAIN, 'temporary DNS'))]
+        await self.run_backup()
+        self.assertEqual(self.connect_calls, 2)
+        self.assertEqual(self.calls.count('auth'), 1)
+        self.assertEqual(self.calls.count('backup/generate_with_automatic_settings'), 1)
+
+    async def test_initial_dns_exhaustion_never_authenticates_or_requests_backup(self):
+        self.connection_errors = [ConnectorError(socket.gaierror(socket.EAI_FAIL, 'DNS failure')) for _ in range(3)]
+        with self.assertRaises(ConnectorError):
+            await self.run_backup()
+        self.assertEqual(self.connect_calls, 3)
+        self.assertEqual(self.calls, [])
+
+    async def test_authentication_failure_does_not_reconnect(self):
+        self.auth_response = 'auth_invalid'
+        with self.assertRaisesRegex(RuntimeError, 'authentication failed'):
+            await self.run_backup()
+        self.assertEqual(self.connect_calls, 1)
+        self.assertEqual(self.calls, ['auth'])
+
+    async def test_connection_error_after_generate_never_replays_backup(self):
+        async def disconnected(kind, generated):
+            if kind == 'backup/generate_with_automatic_settings':
+                raise ConnectorError(socket.gaierror(socket.EAI_AGAIN, 'lost response'))
+        self.hook = disconnected
+        with self.assertRaises(ConnectorError):
+            await self.run_backup()
+        self.assertEqual(self.connect_calls, 1)
+        self.assertEqual(self.calls.count('backup/generate_with_automatic_settings'), 1)
+        self.assertFalse(self.receipt.exists())
 
     async def test_configuration_backup_preserves_encryption_and_omits_history(self):
         identity = {'HA_UPDATE_RUN_ID': 'a' * 32,

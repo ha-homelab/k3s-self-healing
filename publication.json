@@ -196,6 +196,7 @@
     "tests/test_mysql_source_contract.py",
     "tests/test_native_backup.py",
     "tests/test_native_capacity.py",
+    "tests/test_native_connect.py",
     "tests/test_native_contract.py",
     "tests/test_native_export.py",
     "tests/test_native_format.py",

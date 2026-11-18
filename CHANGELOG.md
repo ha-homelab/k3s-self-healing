@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Recover from brief DNS and connection-setup failures before native-backup
+  authentication, using at most three handshakes within a finite connection
+  budget. Never reconnect or repeat a backup request after the connection opens.
+
+### Upgrade
+
+Consume the next reviewed source release and reinstall the native-backup code
+through the existing installer during an exclusive maintenance window. This
+source change does not deploy itself, change schedules or request a backup.
+
+### Security
+
+TLS/certificate failures, HTTP rejections, redirects and authentication failures
+remain nonretryable. Existing credential, destination and backup-receipt checks
+are unchanged; a connection retry never replays an accepted backup operation.
+
 ## [0.2.3] - Unreleased
 
 ### Maintenance
