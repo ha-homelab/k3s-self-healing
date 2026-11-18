@@ -1,6 +1,8 @@
 """Prepare a transaction-consistent recorder dump and use HA's native NAS backup."""
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import io
@@ -8,6 +10,8 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket as network_socket
+import ssl
 import stat
 import sys
 import tarfile
@@ -435,6 +439,52 @@ async def reject_websocket_redirect(_session, _context, params):
     raise RuntimeError('Administrative WebSocket redirects are not allowed')
 
 
+CONNECT_TIMEOUT_SECONDS = 15
+CONNECT_BUDGET_SECONDS = 60
+CONNECT_RETRY_DELAYS = (2, 5)
+
+
+def transient_connect_error(error):
+    """Retry only transport setup, never HTTP, certificate or authentication errors."""
+    import aiohttp
+    if isinstance(error, (ssl.SSLError, aiohttp.ClientSSLError)):
+        return False
+    if isinstance(error, TimeoutError):
+        return True
+    if not isinstance(error, aiohttp.ClientConnectorError):
+        return False
+    cause = error.os_error
+    if isinstance(cause, network_socket.gaierror):
+        return cause.errno in {network_socket.EAI_AGAIN, network_socket.EAI_FAIL}
+    return cause.errno in {errno.ECONNREFUSED, errno.ECONNRESET, errno.ETIMEDOUT,
+                           errno.EHOSTUNREACH, errno.ENETUNREACH}
+
+
+@asynccontextmanager
+async def initial_native_socket(session, url):
+    """Bound retries to the initial handshake, before sending credentials or commands."""
+    deadline = time.monotonic() + CONNECT_BUDGET_SECONDS
+    async with AsyncExitStack() as connections:
+        for attempt in range(len(CONNECT_RETRY_DELAYS) + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Native backup connection deadline exceeded')
+            try:
+                async with asyncio.timeout(min(CONNECT_TIMEOUT_SECONDS, remaining)):
+                    socket = await connections.enter_async_context(session.ws_connect(url))
+                break
+            except Exception as error:
+                if attempt == len(CONNECT_RETRY_DELAYS) or not transient_connect_error(error):
+                    raise
+                remaining = deadline - time.monotonic()
+                delay = CONNECT_RETRY_DELAYS[attempt]
+                if remaining <= delay:
+                    raise TimeoutError('Native backup connection deadline exceeded') from error
+                await asyncio.sleep(delay)
+        # Errors after a successful handshake must never reconnect or replay requests.
+        yield socket
+
+
 async def native_backup(configuration_only=False):
     import aiohttp
     update_context = update_receipt_context()
@@ -451,7 +501,7 @@ async def native_backup(configuration_only=False):
     trace.on_request_redirect.append(reject_websocket_redirect)
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60),
                                      trace_configs=[trace], trust_env=False) as session:
-        async with session.ws_connect(url.replace('http', 'ws', 1) + '/api/websocket') as socket:
+        async with initial_native_socket(session, url.replace('http', 'ws', 1) + '/api/websocket') as socket:
             await socket.receive_json(timeout=API_TIMEOUT_SECONDS)
             await socket.send_json({'type': 'auth', 'access_token': token})
             if (await socket.receive_json(timeout=API_TIMEOUT_SECONDS)).get('type') != 'auth_ok':

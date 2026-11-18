@@ -276,6 +276,21 @@ writes, preserving the previous verified export. Metadata is written to a
 private, exclusively created temporary file before atomic replacement. Keep the
 configuration mount free of concurrent untrusted filesystem writers.
 
+### Temporary connection failures
+
+Before authentication, the native-backup runner retries transient DNS and
+connection-setup failures up to three times, with two- and five-second delays.
+Each handshake has a 15-second timeout, within a shared 60-second connection
+budget. Permanent DNS errors, HTTP rejections, redirects, TLS/certificate errors
+and authentication failures stop immediately; cancellation is preserved.
+
+Retries end when the first WebSocket connection opens. A failure after that
+point never reconnects or repeats a backup request, because HA may already have
+accepted it. Inspect HA's backup status and the exact Job before deciding whether
+to start another backup. Connection recovery improves resilience to brief DNS
+outages; it does not repair persistent DNS or destination failures, and a failed
+Job is not a successful backup.
+
 ### Separate temporary archive filesystem
 
 When HA mounts `/config/tmp_backups` from a separate host filesystem, the
