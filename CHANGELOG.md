@@ -1,7 +1,24 @@
 # Changelog
 
-## [0.2.4] - Unreleased
+## [0.2.5] - Unreleased
 
+### Changed
+
+- Refresh pinned dependencies and reusable workflows since 0.2.4; no functional change is recorded for this base.
+
+### Upgrade
+
+Consume source release 0.2.4 and reinstall the native-backup code
+through the existing installer during an exclusive maintenance window. This
+source change does not deploy itself, change schedules or request a backup.
+
+### Security
+
+TLS/certificate failures, HTTP rejections, redirects and authentication failures
+remain nonretryable. Existing credential, destination and backup-receipt checks
+are unchanged; a connection retry never replays an accepted backup operation.
+
+## [0.2.4] - 2026-11-17
 ### Fixed
 
 - Recover from brief DNS and connection-setup failures before native-backup
