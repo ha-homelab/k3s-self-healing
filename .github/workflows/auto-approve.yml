@@ -20,7 +20,7 @@ jobs:
       contains(fromJSON('["4alvit","californiantiramisu","dependabot[bot]","renovate[bot]"]'), github.event.pull_request.user.login) &&
       (contains(github.event.pull_request.labels.*.name, 'auto-approve') || contains(github.event.pull_request.labels.*.name, 'automerge')) &&
       !github.event.pull_request.draft
-    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-approve-reusable.yml@31e38f0f9fb9a48a0f52609f3dbed92b08cb1926 # main
+    uses: victron-venus/venus-os-ci-toolkit/.github/workflows/auto-approve-reusable.yml@26a650884a170f410af54d11baef1a583aa47c8a # main
     with:
       authors: '["4alvit","californiantiramisu","dependabot[bot]","renovate[bot]"]'
     secrets:
